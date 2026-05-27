@@ -461,17 +461,37 @@ def add_bot():
             shutil.rmtree(bot_dir)
         subprocess.run(['git', 'clone', '-b', branch, '--single-branch', git_url, str(bot_dir)], check=True)
 
-        if python_version:
-            import shutil as sh
-            major_minor = '.'.join(python_version.split('.')[:2])
-            py_exe = sh.which(f"python{major_minor}") or sh.which("python3") or "python3"
-        else:
-            import shutil as sh
-            py_exe = sh.which("python3") or "python3"
+        # Resolve python executable — verify it actually runs (pyenv shims exist but version may not be installed)
+        def find_python(version=None):
+            candidates = []
+            if version:
+                major_minor = '.'.join(version.split('.')[:2])
+                candidates.append(f"python{major_minor}")
+            candidates += ["python3", "python"]
+            for name in candidates:
+                exe = shutil.which(name)
+                if not exe:
+                    continue
+                try:
+                    r = subprocess.run([exe, '--version'], capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        logger.info(f"Using Python executable: {exe}")
+                        return exe
+                except Exception:
+                    continue
+            return "python3"
+
+        py_exe = find_python(python_version)
 
         req_file = bot_dir / 'requirements.txt'
         if req_file.exists():
-            subprocess.run([py_exe, '-m', 'venv', str(venv_dir)], check=True)
+            # Try venv; if the module is missing, try to install it first
+            venv_result = subprocess.run([py_exe, '-m', 'venv', str(venv_dir)], capture_output=True, text=True)
+            if venv_result.returncode != 0:
+                logger.warning(f"venv failed ({venv_result.stderr.strip()}) — trying to install python3-venv")
+                subprocess.run(['apt-get', 'install', '-y', 'python3-venv'], capture_output=True)
+                subprocess.run(['dnf', 'install', '-y', 'python3-venv'], capture_output=True)
+                subprocess.run([py_exe, '-m', 'venv', str(venv_dir)], check=True)
             pip = str(venv_dir / 'bin' / 'pip')
             subprocess.run([pip, 'install', '--no-cache-dir', '-r', str(req_file)], check=True)
 
