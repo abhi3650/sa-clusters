@@ -1,0 +1,16 @@
+flask-socketio==5.1.1
+eventlet==0.40.3
+dnspython==2.2.1
+asyncio
+gunicorn
+flask==2.0.1
+requests
+schedule
+supervisor
+aiofiles 
+watchdog 
+psutil
+python-dotenv
+python-socketio==5.4.0
+python-engineio==4.3.0
+Werkzeug==2.2.2  

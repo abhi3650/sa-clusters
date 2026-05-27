@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: botclusters
+    branch: main
+    plan: free
+    dockerfilePath: ./Dockerfile
+    repo: https://github.com/YOUR_USER/BotClusters
+    env: docker
+    envVars:
+      - key: CLUSTER_01
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: APP_URL
+        sync: false
+    autoDeploy: false
+    disk:
+      name: botdata
+      mountPath: /app
+      sizeGB: 1
