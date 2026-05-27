@@ -2,7 +2,7 @@ flask-socketio==5.1.1
 eventlet==0.40.3
 dnspython==2.2.1
 asyncio
-gunicorn
+# gunicorn not used — app runs via socketio.run() in run.py
 flask==2.0.1
 requests
 schedule
