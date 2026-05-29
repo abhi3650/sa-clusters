@@ -8,51 +8,102 @@
     <link rel="shortcut icon" href="{{ url_for('static', filename='images/cluster.svg') }}" type="image/svg+xml">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
-        /* ── Add Bot Modal extras ───────────────────────── */
+        /* ── Modal base ─────────────────────────────────────── */
         .modal-content { max-height: 90vh; overflow-y: auto; }
+
+        /* ── Form grid ──────────────────────────────────────── */
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; }
-        .form-grid .full { grid-column: 1/-1; }
+        .form-grid .full { grid-column: 1 / -1; }
         .form-group { display: flex; flex-direction: column; gap: 4px; }
-        .form-group label { font-size: .75rem; font-weight: 600; letter-spacing: .04em;
+        .form-group label {
+            font-size: .72rem; font-weight: 700; letter-spacing: .06em;
             text-transform: uppercase; color: var(--text-muted, #888); }
         .form-group input, .form-group select {
-            background: var(--bg-input, #1a1a2e); border: 1px solid var(--border, #333);
-            color: var(--text, #eee); border-radius: 6px; padding: 8px 10px;
-            font-size: .875rem; outline: none; transition: border-color .2s; }
-        .form-group input:focus, .form-group select:focus { border-color: var(--accent, #7c3aed); }
+            background: var(--bg-input, #1a1a2e);
+            border: 1px solid var(--border, #333);
+            color: var(--text, #eee); border-radius: 6px;
+            padding: 8px 10px; font-size: .875rem; outline: none;
+            transition: border-color .2s; }
+        .form-group input:focus { border-color: var(--accent, #7c3aed); }
+
+        /* ── Env pairs ──────────────────────────────────────── */
         .env-pair { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
         .env-pair input { flex: 1; }
-        .env-pair button { background: transparent; border: 1px solid var(--border,#444);
-            color: #f87171; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size:.8rem; }
-        #add-env-btn { font-size: .78rem; background: transparent; border: 1px dashed var(--border,#555);
-            color: var(--text-muted,#888); border-radius: 4px; padding: 4px 10px;
-            cursor: pointer; margin-top: 4px; }
+        .env-pair button {
+            background: transparent; border: 1px solid var(--border, #444);
+            color: #f87171; border-radius: 4px; padding: 4px 8px;
+            cursor: pointer; font-size: .8rem; flex-shrink: 0; }
+        #add-env-btn {
+            font-size: .78rem; background: transparent;
+            border: 1px dashed var(--border, #555); color: var(--text-muted, #888);
+            border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-top: 4px; }
         #add-env-btn:hover { border-color: var(--accent,#7c3aed); color: var(--accent,#7c3aed); }
-        /* panel badge on card */
+
+        /* ── Section label ──────────────────────────────────── */
+        .section-label {
+            font-size: .68rem; font-weight: 700; letter-spacing: .08em;
+            text-transform: uppercase; color: var(--text-muted, #888);
+            margin: 16px 0 8px; border-bottom: 1px solid var(--border, #333);
+            padding-bottom: 4px; }
+
+        /* ── Build log ──────────────────────────────────────── */
+        #build-log-wrap {
+            display: none; margin-top: 14px;
+            border: 1px solid var(--border, #333); border-radius: 8px;
+            overflow: hidden; }
+        #build-log-header {
+            display: flex; align-items: center; gap: 8px;
+            background: rgba(124,58,237,.12); padding: 7px 12px;
+            font-size: .72rem; font-weight: 700; letter-spacing: .06em;
+            text-transform: uppercase; color: #a78bfa; }
+        #build-log-header .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #a78bfa; animation: pulse 1.2s infinite; }
+        @keyframes pulse {
+            0%,100% { opacity: 1; } 50% { opacity: .3; } }
+        #build-log {
+            background: #0d0d1a; color: #cdd6f4;
+            font-family: 'Courier New', monospace; font-size: .78rem;
+            line-height: 1.55; padding: 12px; max-height: 260px;
+            overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+
+        /* ── Panel badge ─────────────────────────────────────── */
         .panel-badge {
             display: inline-flex; align-items: center; gap: 4px;
-            background: rgba(124,58,237,.15); border: 1px solid rgba(124,58,237,.35);
+            background: rgba(124,58,237,.15);
+            border: 1px solid rgba(124,58,237,.35);
             color: #a78bfa; border-radius: 20px; padding: 2px 10px;
             font-size: .72rem; font-weight: 600; text-decoration: none;
-            transition: background .2s; margin-left: 6px; vertical-align: middle; }
+            transition: background .2s; margin-left: 8px; vertical-align: middle; }
         .panel-badge:hover { background: rgba(124,58,237,.3); }
-        /* remove btn */
-        .remove-btn { background: transparent !important; border: 1px solid #f87171 !important;
-            color: #f87171 !important; }
-        .remove-btn:hover { background: rgba(248,113,113,.15) !important; }
-        /* header btn for add bot */
-        .add-bot-btn { background: var(--accent, #7c3aed) !important; color: #fff !important;
-            border: none !important; }
+
+        /* ── Button overrides ───────────────────────────────── */
+        .add-bot-btn {
+            background: var(--accent, #7c3aed) !important;
+            color: #fff !important; border: none !important; }
         .add-bot-btn:hover { opacity: .85; }
-        .modal-title-row { display: flex; align-items: center; gap: 10px; }
-        .section-label { font-size: .7rem; font-weight: 700; letter-spacing: .08em;
-            text-transform: uppercase; color: var(--text-muted,#888); margin: 14px 0 6px;
-            border-bottom: 1px solid var(--border,#333); padding-bottom: 4px; }
+        .remove-btn {
+            background: transparent !important;
+            border: 1px solid #f87171 !important; color: #f87171 !important; }
+        .remove-btn:hover { background: rgba(248,113,113,.15) !important; }
+        .pause-btn {
+            background: transparent !important;
+            border: 1px solid #fbbf24 !important; color: #fbbf24 !important; }
+        .pause-btn:hover { background: rgba(251,191,36,.12) !important; }
+        .clear-btn {
+            background: transparent !important;
+            border: 1px solid #818cf8 !important; color: #818cf8 !important; }
+        .clear-btn:hover { background: rgba(129,140,248,.12) !important; }
+
+        /* ── Modal action row ───────────────────────────────── */
+        .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
+        #addbot-status { margin-top: 10px; font-size: .85rem; min-height: 1.2em; }
     </style>
 </head>
 <body>
 <div class="dashboard">
-    <!-- Header -->
+
+    <!-- ── Header ─────────────────────────────────────────── -->
     <div class="header">
         <div class="header-top">
             <div class="header-title">
@@ -61,19 +112,19 @@
             </div>
             <div class="header-actions">
                 <button class="header-btn add-bot-btn" onclick="openAddBotModal()">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M8 0a1 1 0 0 1 1 1v6h6a1 1 0 0 1 0 2H9v6a1 1 0 0 1-2 0V9H1a1 1 0 0 1 0-2h6V1a1 1 0 0 1 1-1z"/>
                     </svg>
                     Add Bot
                 </button>
                 <a href="/logstream" class="header-btn" target="_blank">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M2 2h12v2H2V2zm0 4h8v2H2V6zm0 4h10v2H2v-2zm0 4h6v2H2v-2z"/>
                     </svg>
                     Log Stream
                 </a>
                 <button class="header-btn" onclick="openCronModal()">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 14A6 6 0 1 1 8 2a6 6 0 0 1 0 12zm.5-9H7v5l4.3 2.5.7-1.2-3.5-2V5z"/>
                     </svg>
                     Cron
@@ -82,49 +133,56 @@
             </div>
         </div>
         <div class="header-stats">
-            <div class="stat-pill stat-online"><span class="stat-dot online"></span><span id="stat-online">0</span> Online</div>
-            <div class="stat-pill stat-offline"><span class="stat-dot offline"></span><span id="stat-offline">0</span> Offline</div>
-            <div class="stat-pill stat-paused"><span class="stat-dot paused"></span><span id="stat-paused">0</span> Paused</div>
+            <div class="stat-pill stat-online">
+                <span class="stat-dot online"></span>
+                <span id="stat-online">0</span> Online
+            </div>
+            <div class="stat-pill stat-offline">
+                <span class="stat-dot offline"></span>
+                <span id="stat-offline">0</span> Offline
+            </div>
+            <div class="stat-pill stat-paused">
+                <span class="stat-dot paused"></span>
+                <span id="stat-paused">0</span> Paused
+            </div>
         </div>
     </div>
 
-    <!-- Bot Grid -->
+    <!-- ── Bot Grid ───────────────────────────────────────── -->
     <div class="bot-grid" id="bot-grid"></div>
 </div>
 
-<!-- Log Modal -->
+<!-- ── Log Modal ──────────────────────────────────────────── -->
 <div id="log-modal" class="modal">
     <div class="modal-content">
-        <span class="close" onclick="document.getElementById('log-modal').style.display='none'">&times;</span>
+        <span class="close" onclick="closeModal('log-modal')">&times;</span>
         <h2>Process Logs</h2>
         <pre id="log-content"></pre>
     </div>
 </div>
 
-<!-- Cron Modal -->
+<!-- ── Cron Modal ─────────────────────────────────────────── -->
 <div id="cron-modal" class="modal">
     <div class="modal-content modal-sm">
         <span class="close" onclick="closeCronModal()">&times;</span>
         <h2>Restart Schedule</h2>
-        <p class="modal-desc">Auto-restart interval in hours. 0 = disabled.</p>
+        <p class="modal-desc">Auto-restart all bots every N hours. Set to 0 to disable.</p>
         <div class="cron-input-group">
             <input type="number" id="cron-hours" min="0" max="720" value="0" placeholder="Hours">
             <span class="cron-unit">hours</span>
         </div>
         <div class="cron-actions">
-            <button class="control-btn save-btn" onclick="saveCron()">Save</button>
+            <button class="control-btn save-btn"   onclick="saveCron()">Save</button>
             <button class="control-btn cancel-btn" onclick="closeCronModal()">Cancel</button>
         </div>
     </div>
 </div>
 
-<!-- Add Bot Modal -->
+<!-- ── Add Bot Modal ──────────────────────────────────────── -->
 <div id="addbot-modal" class="modal">
-    <div class="modal-content" style="max-width:580px">
+    <div class="modal-content" style="max-width:600px">
         <span class="close" onclick="closeAddBotModal()">&times;</span>
-        <div class="modal-title-row">
-            <h2>Add New Bot</h2>
-        </div>
+        <h2>Add New Bot</h2>
         <p class="modal-desc">Clone a GitHub repo and start it as a supervised process.</p>
 
         <div class="section-label">Bot Config</div>
@@ -135,11 +193,11 @@
             </div>
             <div class="form-group">
                 <label>Branch *</label>
-                <input type="text" id="ab-branch" placeholder="main" value="main">
+                <input type="text" id="ab-branch" value="main" placeholder="main">
             </div>
             <div class="form-group full">
                 <label>Git URL *</label>
-                <input type="text" id="ab-git" placeholder="https://github.com/you/yourbot.git">
+                <input type="text" id="ab-git" placeholder="https://github.com/you/bot.git">
             </div>
             <div class="form-group">
                 <label>Run Command *</label>
@@ -151,11 +209,17 @@
             </div>
         </div>
 
-        <div class="section-label">Environment Variables <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional)</span></div>
+        <div class="section-label">
+            Environment Variables
+            <span style="font-weight:400;text-transform:none;font-size:.8rem"> (optional)</span>
+        </div>
         <div id="env-pairs"></div>
         <button id="add-env-btn" onclick="addEnvPair()">+ Add Variable</button>
 
-        <div class="section-label">Web Panel <span style="font-weight:400;text-transform:none;font-size:.8rem">(optional – if your bot has a web UI)</span></div>
+        <div class="section-label">
+            Web Panel
+            <span style="font-weight:400;text-transform:none;font-size:.8rem"> (optional — if your bot has a web UI)</span>
+        </div>
         <div class="form-grid">
             <div class="form-group">
                 <label>Panel Port</label>
@@ -167,11 +231,22 @@
             </div>
         </div>
 
-        <div style="margin-top:18px;display:flex;gap:10px">
-            <button class="control-btn save-btn" id="addbot-submit-btn" onclick="submitAddBot()">Add Bot</button>
+        <!-- Build log ----------------------------------------->
+        <div id="build-log-wrap">
+            <div id="build-log-header">
+                <span class="dot" id="build-dot"></span>
+                Build Output
+            </div>
+            <pre id="build-log"></pre>
+        </div>
+
+        <div class="modal-actions">
+            <button class="control-btn save-btn" id="addbot-submit-btn" onclick="submitAddBot()">
+                Add Bot
+            </button>
             <button class="control-btn cancel-btn" onclick="closeAddBotModal()">Cancel</button>
         </div>
-        <div id="addbot-status" style="margin-top:10px;font-size:.85rem"></div>
+        <div id="addbot-status"></div>
     </div>
 </div>
 
