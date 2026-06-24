@@ -237,6 +237,121 @@ HEALTH_MAX_FAILURES = 3   # failures before auto-restart
 # Config stored in BOT_REGISTRY per bot as 'rate_limit': { max_restarts, window_sec }
 RESTART_TIMESTAMPS: dict = defaultdict(lambda: deque(maxlen=50))
 
+# ════════════════════════════════════════════════════════════════
+#  Deployment feature globals
+# ════════════════════════════════════════════════════════════════
+
+# Git commit history: { safe_name: [ {sha, msg, ts, author}, ... ] } — last 10 per bot
+COMMIT_HISTORY: dict  = defaultdict(list)
+COMMIT_HISTORY_FILE   = Path('/app/commit_history.json')
+
+# Webhook secrets: { safe_name: secret_token }
+WEBHOOK_SECRETS: dict = {}
+WEBHOOK_SECRETS_FILE  = Path('/app/webhook_secrets.json')
+
+# Scheduled deployments: { safe_name: { cron_expr, next_run_ts, enabled } }
+SCHEDULED_DEPLOYS: dict = {}
+SCHEDULED_FILE         = Path('/app/scheduled_deploys.json')
+_sched_thread          = None
+
+# Upload staging dir for ZIP deploys
+UPLOAD_STAGING = Path('/app/_uploads')
+UPLOAD_STAGING.mkdir(parents=True, exist_ok=True)
+
+def _load_deployment_state():
+    for path, store in [
+        (COMMIT_HISTORY_FILE, COMMIT_HISTORY),
+        (WEBHOOK_SECRETS_FILE, WEBHOOK_SECRETS),
+        (SCHEDULED_FILE,       SCHEDULED_DEPLOYS),
+    ]:
+        if path.exists():
+            try:
+                store.update(json.loads(path.read_text()))
+            except Exception as e:
+                logger.error(f"load {path.name}: {e}")
+
+def _save_commit_history():
+    try:
+        COMMIT_HISTORY_FILE.write_text(json.dumps(dict(COMMIT_HISTORY), indent=2))
+    except Exception as e:
+        logger.error(f"save commit history: {e}")
+
+def _save_webhook_secrets():
+    try:
+        WEBHOOK_SECRETS_FILE.write_text(json.dumps(WEBHOOK_SECRETS, indent=2))
+    except Exception as e:
+        logger.error(f"save webhook secrets: {e}")
+
+def _save_scheduled():
+    try:
+        SCHEDULED_FILE.write_text(json.dumps(SCHEDULED_DEPLOYS, indent=2))
+    except Exception as e:
+        logger.error(f"save scheduled: {e}")
+
+_load_deployment_state()
+
+
+def _snapshot_commits(safe: str, bot_dir: Path, keep: int = 10):
+    """Read last `keep` git commits and store in COMMIT_HISTORY."""
+    try:
+        result = subprocess.run(
+            ['git', 'log', f'--max-count={keep}',
+             '--pretty=format:%H|||%s|||%ai|||%an'],
+            cwd=str(bot_dir), capture_output=True, text=True, timeout=10)
+        entries = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split('|||')
+            if len(parts) == 4:
+                entries.append({'sha': parts[0], 'msg': parts[1],
+                                'ts': parts[2], 'author': parts[3]})
+        COMMIT_HISTORY[safe] = entries
+        _save_commit_history()
+    except Exception as e:
+        logger.error(f"snapshot_commits {safe}: {e}")
+
+
+def _redeploy_git_bot(process_name: str, bot_dir: Path, breg: dict) -> dict:
+    """
+    Re-install deps and restart a git bot in-place.
+    Returns { status, message }.
+    """
+    safe       = process_name.replace(' ', '_')
+    python_ver = breg.get('python_version', '')
+    run_cmd    = breg.get('run_command', '')
+    env_vars   = breg.get('env', {})
+
+    try:
+        python_exec = shutil.which(f"python{python_ver}") or shutil.which("python3") or "python3"
+        venv_dir    = bot_dir / 'venv'
+        req_file    = bot_dir / 'requirements.txt'
+
+        if req_file.exists():
+            if not venv_dir.exists():
+                subprocess.run([python_exec, '-m', 'venv', str(venv_dir)], check=True)
+            subprocess.run([str(venv_dir/'bin'/'pip'), 'install', '--no-cache-dir',
+                            '-r', str(req_file)], check=True)
+
+        bot_file = bot_dir / run_cmd
+        py       = venv_dir / 'bin' / 'python3'
+        if bot_file.suffix == '.sh':
+            command = f"bash {bot_file}"
+        elif bot_file.suffix == '.py':
+            command = f"{py} {bot_file}"
+        else:
+            command = f"{py} -m {bot_file.stem}"
+
+        write_git_supervisord_config(process_name, command, str(bot_dir), env_vars)
+        supervisord_reload()
+
+        run_supervisor_command("stop", process_name)
+        time.sleep(1)
+        run_supervisor_command("start", process_name)
+        _record_restart(process_name)
+        broadcast_status_update()
+        return {"status": "success", "message": f"Redeployed {process_name}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 def _load_health_config():
     if HEALTH_CONFIG_FILE.exists():
         try:
@@ -400,6 +515,13 @@ def broadcast_status_update():
                         "failures": hs.get('consecutive_failures', 0),
                         "last_ok":  hs.get('last_ok'),
                     }
+
+                # Deployment extras
+                p["has_webhook"]  = bool(WEBHOOK_SECRETS.get(safe))
+                sched = SCHEDULED_DEPLOYS.get(safe, {})
+                p["scheduled"]    = sched.get('enabled', False)
+                p["deploy_type"]  = breg.get('deploy_type', 'git')
+                p["commit_count"] = len(COMMIT_HISTORY.get(safe, []))
 
             socketio.emit('status_update', {
                 "status": "success", "processes": processes,
@@ -602,6 +724,10 @@ def bot_add():
             'added_at': datetime.utcnow().isoformat()
         }
         _save_bot_registry()
+
+        # Snapshot commit history for rollback support
+        if deploy_type == 'git':
+            _snapshot_commits(safe, clone_dir)
         supervisord_reload()
         broadcast_status_update()
 
@@ -1034,6 +1160,11 @@ def handle_status_request():
                         "failures": hs.get('consecutive_failures', 0),
                         "last_ok":  hs.get('last_ok'),
                     }
+                p["has_webhook"]  = bool(WEBHOOK_SECRETS.get(safe))
+                sched = SCHEDULED_DEPLOYS.get(safe, {})
+                p["scheduled"]    = sched.get('enabled', False)
+                p["deploy_type"]  = breg.get('deploy_type', 'git')
+                p["commit_count"] = len(COMMIT_HISTORY.get(safe, []))
             emit('status_update', {"status":"success","processes":processes,"timestamp":datetime.utcnow().isoformat()})
         else:
             emit('status_update', {"status":"error","message":status["message"],"processes":[]})
@@ -1127,6 +1258,7 @@ eventlet.spawn(_auto_delete_logs_loop)
 eventlet.spawn(_metrics_loop)
 eventlet.spawn(_health_check_loop)
 _start_cron_thread()
+_start_sched_thread()
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1621,6 +1753,397 @@ def _is_restart_rate_limited(process_name: str) -> tuple:
 def _record_restart(process_name: str):
     safe = process_name.replace(' ', '_')
     RESTART_TIMESTAMPS[safe].append(time.time())
+
+
+# ════════════════════════════════════════════════════════════════
+#  Feature 1 — Auto-deploy on git push (webhook)
+# ════════════════════════════════════════════════════════════════
+
+import hmac, hashlib
+
+def _verify_github_signature(payload_bytes: bytes, sig_header: str, secret: str) -> bool:
+    """Verify X-Hub-Signature-256 from GitHub."""
+    if not sig_header or not sig_header.startswith('sha256='):
+        return False
+    expected = 'sha256=' + hmac.new(
+        secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig_header)
+
+
+@app.route('/webhook/<path:process_name>', methods=['POST'])
+def git_webhook(process_name):
+    """
+    GitHub / GitLab push webhook endpoint.
+    URL: POST /webhook/<bot-process-name>
+    Configure in repo → Settings → Webhooks → Content-type: application/json
+    Secret: the token shown in the Webhook Config modal.
+    On a valid push event: git pull → pip install → restart bot.
+    """
+    safe   = process_name.replace(' ', '_')
+    secret = WEBHOOK_SECRETS.get(safe, '')
+    breg   = BOT_REGISTRY.get(safe) or BOT_REGISTRY.get(process_name, {})
+
+    if not breg:
+        return jsonify({"status": "error", "message": "Bot not registered"}), 404
+
+    payload_bytes = request.get_data()
+
+    # Verify secret if one is configured
+    if secret:
+        sig = request.headers.get('X-Hub-Signature-256', '') or \
+              request.headers.get('X-Gitlab-Token', '')
+        # GitLab sends the raw token, not HMAC
+        if request.headers.get('X-Gitlab-Token'):
+            if sig != secret:
+                return jsonify({"status": "error", "message": "Invalid token"}), 401
+        else:
+            if not _verify_github_signature(payload_bytes, sig, secret):
+                return jsonify({"status": "error", "message": "Invalid signature"}), 401
+
+    # Only redeploy on push events; ignore others
+    event = request.headers.get('X-GitHub-Event', '') or \
+            request.headers.get('X-Gitlab-Event', '')
+    if event and event not in ('push', 'Push Hook', ''):
+        return jsonify({"status": "ok", "message": f"Ignored event: {event}"}), 200
+
+    bot_dir = Path('/app') / safe
+    if not bot_dir.exists():
+        return jsonify({"status": "error", "message": "Bot directory not found"}), 500
+
+    # Run git pull in background greenlet so webhook returns fast
+    def _pull_and_redeploy():
+        try:
+            branch = breg.get('branch', 'main')
+            subprocess.run(['git', 'fetch', 'origin'], cwd=str(bot_dir),
+                           capture_output=True, timeout=60)
+            subprocess.run(['git', 'reset', '--hard', f'origin/{branch}'],
+                           cwd=str(bot_dir), capture_output=True, timeout=30)
+            _snapshot_commits(safe, bot_dir)
+            result = _redeploy_git_bot(process_name, bot_dir, breg)
+            if result['status'] == 'success':
+                _send_alert(process_name, "🚀 Auto-deployed via webhook",
+                            f"Branch: {branch}")
+            else:
+                _send_alert(process_name, "❌ Webhook deploy failed", result['message'])
+        except Exception as e:
+            logger.error(f"webhook redeploy {process_name}: {e}")
+            _send_alert(process_name, "❌ Webhook deploy error", str(e))
+
+    eventlet.spawn(_pull_and_redeploy)
+    return jsonify({"status": "ok", "message": "Webhook received — deploying…"}), 202
+
+
+@app.route('/bot/webhook/config/<path:process_name>', methods=['GET'])
+@login_required
+def webhook_config_get(process_name):
+    safe   = process_name.replace(' ', '_')
+    secret = WEBHOOK_SECRETS.get(safe, '')
+    webhook_url = request.host_url.rstrip('/') + f'/webhook/{process_name}'
+    return jsonify({"status": "success", "webhook_url": webhook_url,
+                    "has_secret": bool(secret)}), 200
+
+
+@app.route('/bot/webhook/config/<path:process_name>', methods=['POST'])
+@login_required
+def webhook_config_set(process_name):
+    """Set or regenerate the webhook secret for a bot."""
+    data   = request.get_json(silent=True) or {}
+    safe   = process_name.replace(' ', '_')
+    secret = data.get('secret', '').strip()
+
+    if data.get('regenerate') or not secret:
+        import secrets as _secrets
+        secret = _secrets.token_hex(24)
+
+    WEBHOOK_SECRETS[safe] = secret
+    _save_webhook_secrets()
+    webhook_url = request.host_url.rstrip('/') + f'/webhook/{process_name}'
+    return jsonify({"status": "success", "webhook_url": webhook_url,
+                    "secret": secret}), 200
+
+
+# ════════════════════════════════════════════════════════════════
+#  Feature 2 — Deploy from ZIP upload
+# ════════════════════════════════════════════════════════════════
+
+@app.route('/bot/upload/<path:process_name>', methods=['POST'])
+@login_required
+def bot_upload_zip(process_name):
+    """
+    Upload a ZIP of bot source code and deploy it (no git URL required).
+    Multipart form fields:
+      file          — .zip file
+      run_command   — entry point file (e.g. bot.py)
+      python_version — optional
+      env_json      — optional JSON string of env vars
+    """
+    safe = process_name.replace(' ', '_')
+    if not re.match(r'^[a-zA-Z0-9_ \-]+$', process_name):
+        return jsonify({"status": "error", "message": "Invalid process_name"}), 400
+    if not _bot_number_from_name(process_name):
+        return jsonify({"status": "error",
+                        "message": "process_name must end with botN"}), 400
+
+    uploaded = request.files.get('file')
+    if not uploaded or not uploaded.filename.endswith('.zip'):
+        return jsonify({"status": "error", "message": "A .zip file is required"}), 400
+
+    run_command = request.form.get('run_command', 'bot.py').strip()
+    python_ver  = request.form.get('python_version', '').strip()
+    env_raw     = request.form.get('env_json', '{}')
+    try:
+        env_vars = json.loads(env_raw)
+    except Exception:
+        env_vars = {}
+
+    import zipfile
+    staging    = UPLOAD_STAGING / safe
+    bot_dir    = Path('/app') / safe
+
+    try:
+        # Save and extract zip to staging
+        staging.mkdir(parents=True, exist_ok=True)
+        zip_path = staging / 'upload.zip'
+        uploaded.save(str(zip_path))
+
+        # Wipe old dir and extract fresh
+        if bot_dir.exists():
+            shutil.rmtree(bot_dir)
+        bot_dir.mkdir(parents=True)
+
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            # Strip common top-level dir if present
+            names   = zf.namelist()
+            prefix  = names[0].split('/')[0] + '/' if names and '/' in names[0] else ''
+            all_same_prefix = prefix and all(n.startswith(prefix) for n in names)
+            for member in zf.infolist():
+                target = member.filename
+                if all_same_prefix:
+                    target = target[len(prefix):]
+                if not target:
+                    continue
+                dest = bot_dir / target
+                if member.is_dir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src, open(dest, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+
+        # Install deps + write supervisord config
+        python_exec = shutil.which(f"python{python_ver}") or shutil.which("python3") or "python3"
+        venv_dir    = bot_dir / 'venv'
+        req_file    = bot_dir / 'requirements.txt'
+        if req_file.exists():
+            subprocess.run([python_exec, '-m', 'venv', str(venv_dir)], check=True)
+            subprocess.run([str(venv_dir/'bin'/'pip'), 'install', '--no-cache-dir',
+                            '-r', str(req_file)], check=True)
+
+        bot_file = bot_dir / run_command
+        py       = venv_dir / 'bin' / 'python3'
+        if bot_file.suffix == '.sh':
+            command = f"bash {bot_file}"
+        else:
+            command = f"{py} {bot_file}"
+
+        write_git_supervisord_config(process_name, command, str(bot_dir), env_vars)
+
+        # Save to registry (no git_url for ZIP deploys)
+        BOT_REGISTRY[safe] = {
+            'name': process_name, 'safe': safe, 'git_url': '',
+            'branch': '', 'deploy_type': 'zip',
+            'run_command': run_command, 'python_version': python_ver,
+            'web_port': None, 'env': env_vars,
+            'added_at': datetime.utcnow().isoformat(),
+            'zip_filename': uploaded.filename,
+        }
+        _save_bot_registry()
+        supervisord_reload()
+        broadcast_status_update()
+
+        # Clean up staging
+        shutil.rmtree(staging, ignore_errors=True)
+
+        return jsonify({"status": "success",
+                        "message": f"ZIP deployed: {process_name}"}), 200
+
+    except zipfile.BadZipFile:
+        return jsonify({"status": "error", "message": "Invalid or corrupt ZIP file"}), 400
+    except subprocess.CalledProcessError as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e:
+        logger.error(f"zip upload error {process_name}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ════════════════════════════════════════════════════════════════
+#  Feature 3 — Rollback to previous git commit
+# ════════════════════════════════════════════════════════════════
+
+@app.route('/bot/commits/<path:process_name>', methods=['GET'])
+@login_required
+def bot_commits(process_name):
+    """Return the last 10 git commits for this bot."""
+    safe    = process_name.replace(' ', '_')
+    bot_dir = Path('/app') / safe
+    # Refresh from disk if dir exists
+    if bot_dir.exists() and (bot_dir / '.git').exists():
+        _snapshot_commits(safe, bot_dir)
+    commits = COMMIT_HISTORY.get(safe, [])
+    return jsonify({"status": "success", "commits": commits}), 200
+
+
+@app.route('/bot/rollback/<path:process_name>', methods=['POST'])
+@login_required
+def bot_rollback(process_name):
+    """
+    Roll back a bot to a specific git commit SHA.
+    Body: { "sha": "<full-or-short-sha>" }
+    """
+    data = request.get_json(silent=True) or {}
+    sha  = data.get('sha', '').strip()
+    if not sha or not re.match(r'^[0-9a-f]{6,40}$', sha, re.I):
+        return jsonify({"status": "error", "message": "Valid SHA required"}), 400
+
+    safe    = process_name.replace(' ', '_')
+    breg    = BOT_REGISTRY.get(safe) or BOT_REGISTRY.get(process_name, {})
+    bot_dir = Path('/app') / safe
+
+    if not breg:
+        return jsonify({"status": "error", "message": "Bot not in registry"}), 404
+    if not bot_dir.exists() or not (bot_dir / '.git').exists():
+        return jsonify({"status": "error",
+                        "message": "Bot directory or .git not found"}), 404
+    if breg.get('deploy_type') == 'zip':
+        return jsonify({"status": "error",
+                        "message": "Rollback not available for ZIP-deployed bots"}), 400
+
+    try:
+        # Hard reset to the requested commit
+        subprocess.run(['git', 'checkout', sha], cwd=str(bot_dir), check=True,
+                       capture_output=True, timeout=30)
+        _snapshot_commits(safe, bot_dir)
+
+        result = _redeploy_git_bot(process_name, bot_dir, breg)
+        if result['status'] == 'success':
+            _send_alert(process_name, f"⏪ Rolled back to {sha[:8]}", "")
+        return jsonify({**result, "sha": sha}), 200 if result['status']=='success' else 500
+
+    except subprocess.CalledProcessError as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e:
+        logger.error(f"rollback {process_name}: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ════════════════════════════════════════════════════════════════
+#  Feature 4 — Scheduled deployments
+# ════════════════════════════════════════════════════════════════
+
+def _next_run_from_interval(interval_hours: float) -> float:
+    return time.time() + interval_hours * 3600
+
+
+@app.route('/bot/schedule/<path:process_name>', methods=['GET'])
+@login_required
+def bot_schedule_get(process_name):
+    safe = process_name.replace(' ', '_')
+    sched = SCHEDULED_DEPLOYS.get(safe, {})
+    return jsonify({"status": "success", "schedule": sched}), 200
+
+
+@app.route('/bot/schedule/<path:process_name>', methods=['POST'])
+@login_required
+def bot_schedule_set(process_name):
+    """
+    Schedule periodic auto-redeploy (git pull + restart).
+    Body: { interval_hours: 6, enabled: true }
+    interval_hours: how often to redeploy (min 0.25 = 15 min)
+    """
+    data   = request.get_json(silent=True) or {}
+    safe   = process_name.replace(' ', '_')
+    hours  = float(data.get('interval_hours', 24))
+    enabled = bool(data.get('enabled', True))
+
+    if hours < 0.25:
+        return jsonify({"status": "error",
+                        "message": "interval_hours must be ≥ 0.25 (15 min)"}), 400
+
+    next_run = _next_run_from_interval(hours) if enabled else None
+    SCHEDULED_DEPLOYS[safe] = {
+        'process_name': process_name,
+        'interval_hours': hours,
+        'enabled': enabled,
+        'next_run': next_run,
+        'last_run': None,
+    }
+    _save_scheduled()
+    _start_sched_thread()
+    return jsonify({
+        "status": "success",
+        "message": f"Scheduled every {hours}h" if enabled else "Schedule disabled",
+        "schedule": SCHEDULED_DEPLOYS[safe]
+    }), 200
+
+
+@app.route('/bot/schedule/<path:process_name>', methods=['DELETE'])
+@login_required
+def bot_schedule_delete(process_name):
+    safe = process_name.replace(' ', '_')
+    SCHEDULED_DEPLOYS.pop(safe, None)
+    _save_scheduled()
+    return jsonify({"status": "success", "message": "Schedule removed"}), 200
+
+
+def _scheduled_deploy_loop():
+    """Background loop: trigger scheduled redeployments."""
+    eventlet.sleep(30)
+    while True:
+        now = time.time()
+        for safe, sched in list(SCHEDULED_DEPLOYS.items()):
+            if not sched.get('enabled'):
+                continue
+            next_run = sched.get('next_run') or 0
+            if now < next_run:
+                continue
+            pname   = sched.get('process_name', safe)
+            breg    = BOT_REGISTRY.get(safe, {})
+            bot_dir = Path('/app') / safe
+
+            if not breg or not bot_dir.exists():
+                continue
+            if breg.get('deploy_type') == 'zip':
+                # Can't auto-redeploy ZIPs; skip
+                continue
+
+            logger.info(f"Scheduled deploy: {pname}")
+            try:
+                branch = breg.get('branch', 'main')
+                subprocess.run(['git', 'fetch', 'origin'], cwd=str(bot_dir),
+                               capture_output=True, timeout=60)
+                subprocess.run(['git', 'reset', '--hard', f'origin/{branch}'],
+                               cwd=str(bot_dir), capture_output=True, timeout=30)
+                _snapshot_commits(safe, bot_dir)
+                result = _redeploy_git_bot(pname, bot_dir, breg)
+                sched['last_run'] = now
+                sched['next_run'] = _next_run_from_interval(sched['interval_hours'])
+                _save_scheduled()
+                if result['status'] == 'success':
+                    _send_alert(pname, "⏰ Scheduled auto-deploy complete",
+                                f"Next: {sched['interval_hours']}h")
+                else:
+                    _send_alert(pname, "⏰ Scheduled deploy failed", result['message'])
+            except Exception as e:
+                logger.error(f"scheduled deploy {pname}: {e}")
+                _send_alert(pname, "⏰ Scheduled deploy error", str(e))
+
+        eventlet.sleep(60)
+
+
+def _start_sched_thread():
+    global _sched_thread
+    if not _sched_thread:
+        _sched_thread = eventlet.spawn(_scheduled_deploy_loop)
 
 
 @app.errorhandler(Exception)

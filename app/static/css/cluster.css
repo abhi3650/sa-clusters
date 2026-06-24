@@ -590,3 +590,93 @@ a:hover { text-decoration: underline; }
   cursor: pointer; appearance: none; width: 100%;
 }
 .fg-select:focus { outline: none; border-color: var(--accent); }
+
+/* ── Deployment feature button styles ───────────────────────── */
+.cbtn-webhook  { border-color: rgba(56,189,248,.3);  color: var(--accent); }
+.cbtn-webhook:hover  { background: rgba(56,189,248,.08); }
+.cbtn-zip      { border-color: rgba(251,191,36,.3);  color: var(--yellow); }
+.cbtn-zip:hover      { background: rgba(251,191,36,.08); }
+.cbtn-rollback { border-color: rgba(167,139,250,.3); color: var(--purple); }
+.cbtn-rollback:hover { background: rgba(167,139,250,.08); }
+.cbtn-sched    { border-color: rgba(52,211,153,.3);  color: var(--green); }
+.cbtn-sched:hover    { background: rgba(52,211,153,.08); }
+
+/* ── Card meta chips ─────────────────────────────────────────── */
+.meta-webhook { color: var(--accent);  background: rgba(56,189,248,.08); }
+.meta-sched   { color: var(--green);   background: rgba(52,211,153,.08); }
+.meta-zip     { color: var(--yellow);  background: rgba(251,191,36,.08); }
+
+/* ── Copy row (webhook URL / secret) ────────────────────────── */
+.copy-row {
+  display: flex; gap: 8px; align-items: center;
+}
+.copy-row input {
+  flex: 1;
+  background: var(--surface2); border: 1px solid var(--border2);
+  border-radius: var(--radius-sm); color: var(--text);
+  padding: 8px 11px; font-size: 12px; font-family: monospace;
+  cursor: text;
+}
+.copy-row input:focus { outline: none; border-color: var(--accent); }
+
+/* ── Webhook setup steps ────────────────────────────────────── */
+.webhook-steps {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 12px 16px;
+  margin-top: 8px; font-size: 13px;
+}
+.webhook-steps p    { color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
+.webhook-steps ol   { padding-left: 18px; display: flex; flex-direction: column; gap: 5px; }
+.webhook-steps li   { color: var(--text); }
+.webhook-steps code {
+  background: rgba(56,189,248,.1); color: var(--accent);
+  padding: 1px 5px; border-radius: 3px; font-size: 12px;
+}
+
+/* ── ZIP drop zone ──────────────────────────────────────────── */
+.file-drop-zone {
+  border: 2px dashed var(--border2); border-radius: var(--radius-sm);
+  padding: 28px 16px; text-align: center; cursor: pointer;
+  color: var(--text-muted); font-size: 13px;
+  transition: border-color .18s, background .18s;
+}
+.file-drop-zone:hover, .file-drop-zone.drag-over {
+  border-color: var(--accent); background: rgba(56,189,248,.05);
+  color: var(--accent);
+}
+
+/* ── Commit list ─────────────────────────────────────────────── */
+.commit-list {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 360px; overflow-y: auto;
+}
+.commit-loading {
+  color: var(--text-muted); font-size: 13px; padding: 16px;
+  text-align: center;
+}
+.commit-row {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 14px; gap: 12px;
+}
+.commit-row.commit-current { border-color: var(--accent); }
+.commit-info {
+  display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0;
+}
+.commit-sha {
+  font-family: monospace; font-size: 12px; font-weight: 700;
+  color: var(--accent);
+}
+.commit-msg {
+  font-size: 13px; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.commit-meta {
+  font-size: 11px; color: var(--text-muted);
+}
+.commit-actions { flex-shrink: 0; }
+.commit-badge-current {
+  font-size: 11px; font-weight: 700; padding: 3px 8px;
+  border-radius: 20px; background: rgba(56,189,248,.12);
+  color: var(--accent); border: 1px solid rgba(56,189,248,.25);
+}

@@ -238,12 +238,16 @@ function updateCard(card, p) {
               ${!isRunning && !isPaused ? 'disabled':''}>
         ${isPaused ? '▶ Resume' : '⏸ Pause'}
       </button>
-      <button class="cbtn cbtn-log"    onclick="openLogModal('${p.name}')">📋</button>
-      <button class="cbtn cbtn-metrics" onclick="openMetricsModal('${p.name}')">📊</button>
-      <button class="cbtn cbtn-env"    onclick="openEnvModal('${p.name}')" title="Edit env vars">🔧</button>
-      <button class="cbtn cbtn-stdin"  onclick="openStdinModal('${p.name}')" ${!isRunning?'disabled':''} title="Inject stdin">⌨</button>
-      <button class="cbtn cbtn-health" onclick="openHealthModal('${p.name}')" title="Health check">${p.health ? (p.health.ok ? '🟢' : '🔴') : '🏥'}</button>
-      <button class="cbtn cbtn-rl"     onclick="openRlModal('${p.name}')" title="Rate limit">${p.rate_limit?.limited ? '🚫' : '🚦'}</button>
+      <button class="cbtn cbtn-log"      onclick="openLogModal('${p.name}')">📋</button>
+      <button class="cbtn cbtn-metrics"  onclick="openMetricsModal('${p.name}')">📊</button>
+      <button class="cbtn cbtn-env"      onclick="openEnvModal('${p.name}')" title="Edit env vars">🔧</button>
+      <button class="cbtn cbtn-stdin"    onclick="openStdinModal('${p.name}')" ${!isRunning?'disabled':''} title="Inject stdin">⌨</button>
+      <button class="cbtn cbtn-health"   onclick="openHealthModal('${p.name}')" title="Health check">${p.health ? (p.health.ok ? '🟢' : '🔴') : '🏥'}</button>
+      <button class="cbtn cbtn-rl"       onclick="openRlModal('${p.name}')" title="Rate limit">${p.rate_limit?.limited ? '🚫' : '🚦'}</button>
+      <button class="cbtn cbtn-webhook"  onclick="openWebhookModal('${p.name}')" title="Git webhook">${p.has_webhook ? '🔗✓' : '🔗'}</button>
+      <button class="cbtn cbtn-zip"      onclick="openZipModal('${p.name}')" title="Deploy ZIP">📦</button>
+      <button class="cbtn cbtn-rollback" onclick="openRollbackModal('${p.name}')" title="Rollback" ${p.commit_count < 2 || p.deploy_type==='zip' ? 'disabled':''}>⏪</button>
+      <button class="cbtn cbtn-sched"    onclick="openSchedModal('${p.name}')" title="Schedule">${p.scheduled ? '⏰✓' : '⏰'}</button>
       ${webUIBtn}
       <button class="cbtn cbtn-delete" onclick="deleteBot('${p.name}')">🗑</button>
     `;
@@ -265,6 +269,12 @@ function updateCard(card, p) {
     ? `<span class="meta-item ${p.health.ok ? 'meta-health-ok' : 'meta-health-fail'}" title="Health: ${p.health.url}">${p.health.ok ? '🟢 Healthy' : `🔴 ${p.health.failures} fail${p.health.failures!==1?'s':''}`}</span>` : '';
   const rlLine    = (p.rate_limit?.limited)
     ? `<span class="meta-item meta-rl-limited" title="Rate limited">🚫 Rate limited</span>` : '';
+  const webhookLine = p.has_webhook
+    ? `<span class="meta-item meta-webhook" title="Webhook active">🔗 Webhook</span>` : '';
+  const schedLine = p.scheduled
+    ? `<span class="meta-item meta-sched" title="Auto-deploy scheduled">⏰ Scheduled</span>` : '';
+  const deployTypeLine = (p.deploy_type === 'zip')
+    ? `<span class="meta-item meta-zip" title="ZIP deployed">📦 ZIP</span>` : '';
 
   card.innerHTML = `
     <div class="card-header">
@@ -272,7 +282,7 @@ function updateCard(card, p) {
       <div class="card-badges">${dockerBadge}<span class="tag ${statusClass}">${statusLabel}</span></div>
     </div>
     <div class="card-meta">
-      ${uptimeLine}${pidLine}${portLine}${gitLine}${cpuLine}${memLine}${rcLine}${healthLine}${rlLine}
+      ${uptimeLine}${pidLine}${portLine}${gitLine}${cpuLine}${memLine}${rcLine}${healthLine}${rlLine}${webhookLine}${schedLine}${deployTypeLine}
     </div>
     ${progressBar}
     <div class="card-controls">${controls}</div>
@@ -1089,6 +1099,305 @@ async function removeRateLimit() {
     await fetch(`/bot/ratelimit/${rlBot}`, { method: 'DELETE' });
     showToast('Rate limit removed', 'info');
     closeRlModal();
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Feature 1 — Git Webhook config
+// ════════════════════════════════════════════════════════════════
+
+let webhookBot = null;
+
+async function openWebhookModal(name) {
+  webhookBot = name;
+  document.getElementById('webhook-modal-title').textContent = formatBotName(name);
+  document.getElementById('webhook-modal').style.display = 'flex';
+  document.getElementById('webhook-status').style.display = 'none';
+  document.getElementById('webhook-url').value    = 'Loading…';
+  document.getElementById('webhook-secret').value = '';
+
+  try {
+    const resp = await fetch(`/bot/webhook/config/${name}`);
+    const d    = await resp.json();
+    document.getElementById('webhook-url').value    = d.webhook_url || '';
+    document.getElementById('webhook-secret').value = d.has_secret
+      ? '(secret set — regenerate to view)'
+      : '(none — click Regenerate to create)';
+
+    // Auto-generate a secret if none exists
+    if (!d.has_secret) await regenWebhookSecret(true);
+  } catch (e) {
+    setStatus(document.getElementById('webhook-status'), 'error', `Load failed: ${e.message}`);
+  }
+}
+
+function closeWebhookModal() {
+  document.getElementById('webhook-modal').style.display = 'none';
+  webhookBot = null;
+}
+
+function copyWebhookUrl() {
+  const val = document.getElementById('webhook-url').value;
+  navigator.clipboard.writeText(val).then(() => showToast('URL copied!', 'success'))
+    .catch(() => showToast('Copy failed', 'error'));
+}
+
+async function regenWebhookSecret(silent = false) {
+  if (!webhookBot) return;
+  try {
+    const resp = await fetch(`/bot/webhook/config/${webhookBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regenerate: true })
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      document.getElementById('webhook-secret').value = d.secret;
+      document.getElementById('webhook-url').value    = d.webhook_url;
+      if (!silent) showToast('Secret regenerated', 'success');
+    }
+  } catch (e) {
+    if (!silent) showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Feature 2 — ZIP upload deploy
+// ════════════════════════════════════════════════════════════════
+
+let zipBot  = null;
+let zipFile = null;
+
+function openZipModal(name) {
+  zipBot  = name;
+  zipFile = null;
+  document.getElementById('zip-modal-title').textContent = formatBotName(name);
+  document.getElementById('zip-modal').style.display = 'flex';
+  document.getElementById('zip-status').style.display = 'none';
+  document.getElementById('zip-drop-label').textContent = '📂 Click to select or drag & drop a .zip';
+  document.getElementById('zip-drop-zone').classList.remove('drag-over');
+  document.getElementById('zip-file-input').value = '';
+}
+
+function closeZipModal() {
+  document.getElementById('zip-modal').style.display = 'none';
+  zipBot = zipFile = null;
+}
+
+function handleZipSelect(input) {
+  if (input.files[0]) {
+    zipFile = input.files[0];
+    document.getElementById('zip-drop-label').textContent = `✅ ${zipFile.name}`;
+  }
+}
+
+function handleZipDrop(e) {
+  e.preventDefault();
+  document.getElementById('zip-drop-zone').classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.name.endsWith('.zip')) {
+    zipFile = f;
+    document.getElementById('zip-drop-label').textContent = `✅ ${f.name}`;
+  } else {
+    showToast('Please drop a .zip file', 'error');
+  }
+}
+
+async function submitZipDeploy() {
+  if (!zipBot) return;
+  const statusEl = document.getElementById('zip-status');
+
+  if (!zipFile) {
+    setStatus(statusEl, 'error', '⚠ Please select a ZIP file first.'); return;
+  }
+
+  const runCmd = document.getElementById('zip-run-command').value.trim();
+  const pyVer  = document.getElementById('zip-python-version').value.trim();
+  const envTxt = document.getElementById('zip-env').value.trim();
+
+  const envObj = {};
+  envTxt.split('\n').forEach(line => {
+    const idx = line.indexOf('=');
+    if (idx > 0) envObj[line.slice(0,idx).trim()] = line.slice(idx+1).trim();
+  });
+
+  const formData = new FormData();
+  formData.append('file', zipFile);
+  formData.append('run_command', runCmd || 'bot.py');
+  formData.append('python_version', pyVer);
+  formData.append('env_json', JSON.stringify(envObj));
+
+  setStatus(statusEl, 'info', '⏳ Uploading and deploying…');
+  try {
+    const resp = await fetch(`/bot/upload/${zipBot}`, { method: 'POST', body: formData });
+    const d    = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', `✅ ${d.message}`);
+      showToast('ZIP deployed!', 'success');
+      setTimeout(requestStatus, 1000);
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ ${e.message}`);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Feature 3 — Rollback to previous commit
+// ════════════════════════════════════════════════════════════════
+
+let rollbackBot = null;
+
+async function openRollbackModal(name) {
+  rollbackBot = name;
+  document.getElementById('rollback-modal-title').textContent = formatBotName(name);
+  document.getElementById('rollback-modal').style.display = 'flex';
+  document.getElementById('rollback-status').style.display = 'none';
+  document.getElementById('commit-list').innerHTML = '<div class="commit-loading">Loading commits…</div>';
+
+  try {
+    const resp    = await fetch(`/bot/commits/${name}`);
+    const d       = await resp.json();
+    const commits = d.commits || [];
+
+    if (!commits.length) {
+      document.getElementById('commit-list').innerHTML =
+        '<div class="commit-loading">No commit history available.</div>';
+      return;
+    }
+
+    document.getElementById('commit-list').innerHTML = commits.map((c, i) => `
+      <div class="commit-row ${i === 0 ? 'commit-current' : ''}">
+        <div class="commit-info">
+          <span class="commit-sha">${c.sha.slice(0,8)}</span>
+          <span class="commit-msg">${escapeHtml(c.msg)}</span>
+          <span class="commit-meta">${c.author} · ${c.ts.slice(0,16)}</span>
+        </div>
+        <div class="commit-actions">
+          ${i === 0
+            ? '<span class="commit-badge-current">current</span>'
+            : `<button class="hbtn hbtn-sm" onclick="doRollback('${c.sha}','${escapeHtml(c.msg).slice(0,30)}')">⏪ Rollback</button>`
+          }
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('commit-list').innerHTML =
+      `<div class="commit-loading" style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+}
+
+function closeRollbackModal() {
+  document.getElementById('rollback-modal').style.display = 'none';
+  rollbackBot = null;
+}
+
+function doRollback(sha, msg) {
+  confirmAction(`Rollback to ${sha.slice(0,8)}?`,
+    `"${msg}" — The bot will restart at this exact commit.`,
+    '⏪ Rollback', true, async () => {
+      const statusEl = document.getElementById('rollback-status');
+      setStatus(statusEl, 'info', `⏳ Rolling back to ${sha.slice(0,8)}…`);
+      try {
+        const resp = await fetch(`/bot/rollback/${rollbackBot}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sha })
+        });
+        const d = await resp.json();
+        if (d.status === 'success') {
+          setStatus(statusEl, 'success', `✅ Rolled back to ${sha.slice(0,8)}`);
+          showToast('Rollback complete', 'success');
+          setTimeout(requestStatus, 1200);
+        } else {
+          setStatus(statusEl, 'error', `❌ ${d.message}`);
+        }
+      } catch (e) {
+        setStatus(statusEl, 'error', `❌ ${e.message}`);
+      }
+    });
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Feature 4 — Scheduled deployments
+// ════════════════════════════════════════════════════════════════
+
+let schedBot = null;
+
+async function openSchedModal(name) {
+  schedBot = name;
+  document.getElementById('sched-modal-title').textContent = formatBotName(name);
+  document.getElementById('schedule-modal').style.display = 'flex';
+  document.getElementById('sched-status').style.display = 'none';
+  document.getElementById('sched-current').style.display = 'none';
+
+  try {
+    const resp  = await fetch(`/bot/schedule/${name}`);
+    const d     = await resp.json();
+    const sched = d.schedule || {};
+
+    if (sched.interval_hours) {
+      document.getElementById('sched-hours').value   = sched.interval_hours;
+      document.getElementById('sched-enabled').value = sched.enabled ? 'true' : 'false';
+      document.getElementById('sched-current').style.display = 'block';
+      document.getElementById('sched-next').textContent =
+        sched.next_run ? new Date(sched.next_run * 1000).toLocaleString() : '—';
+      document.getElementById('sched-last').textContent =
+        sched.last_run ? new Date(sched.last_run * 1000).toLocaleString() : 'Never';
+    }
+  } catch (e) {
+    setStatus(document.getElementById('sched-status'), 'error', `Load failed: ${e.message}`);
+  }
+}
+
+function closeSchedModal() {
+  document.getElementById('schedule-modal').style.display = 'none';
+  schedBot = null;
+}
+
+async function saveSchedule() {
+  if (!schedBot) return;
+  const statusEl = document.getElementById('sched-status');
+  const hours    = parseFloat(document.getElementById('sched-hours').value) || 24;
+  const enabled  = document.getElementById('sched-enabled').value === 'true';
+
+  setStatus(statusEl, 'info', '⏳ Saving…');
+  try {
+    const resp = await fetch(`/bot/schedule/${schedBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interval_hours: hours, enabled })
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', `✅ ${d.message}`);
+      showToast('Schedule saved', 'success');
+      if (d.schedule?.next_run) {
+        document.getElementById('sched-current').style.display = 'block';
+        document.getElementById('sched-next').textContent =
+          new Date(d.schedule.next_run * 1000).toLocaleString();
+        document.getElementById('sched-last').textContent = 'Never';
+      }
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ ${e.message}`);
+  }
+}
+
+async function removeSchedule() {
+  if (!schedBot) return;
+  try {
+    await fetch(`/bot/schedule/${schedBot}`, { method: 'DELETE' });
+    showToast('Schedule removed', 'info');
+    closeSchedModal();
   } catch (e) {
     showToast(`Error: ${e.message}`, 'error');
   }

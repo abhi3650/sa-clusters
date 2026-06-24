@@ -5,17 +5,12 @@ COPY install.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/install.sh
 RUN /usr/local/bin/install.sh
 
-# Install Docker CLI so BotClusters can build & run Docker bots
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg lsb-release && \
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://download.docker.com/linux/debian/gpg | \
-        gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-        https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
-        > /etc/apt/sources.list.d/docker.list && \
-    apt-get update && apt-get install -y --no-install-recommends docker-ce-cli && \
-    rm -rf /var/lib/apt/lists/*
+# Install Docker CLI — base image is Fedora so we use dnf
+# Docker's official Fedora repo ships docker-ce-cli for all Fedora versions
+RUN dnf install -y dnf-plugins-core && \
+    dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo && \
+    dnf install -y docker-ce-cli --nobest --allowerasing && \
+    dnf clean all
 
 COPY requirements.txt ./
 RUN pip3 install --no-cache-dir -r requirements.txt
@@ -23,6 +18,6 @@ COPY . .
 
 EXPOSE 5000
 
-# Mount the Docker socket at runtime:
+# Mount the Docker socket at runtime so BotClusters can build & manage containers:
 #   docker run -v /var/run/docker.sock:/var/run/docker.sock ...
 CMD ["python3", "cluster.py"]

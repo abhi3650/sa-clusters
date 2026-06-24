@@ -397,6 +397,143 @@
   </div>
 </div>
 
+<!-- ── WEBHOOK CONFIG MODAL ──────────────────────────────────── -->
+<div id="webhook-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>🔗 Git Webhook — <span id="webhook-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeWebhookModal()">✕</button>
+    </div>
+    <p class="modal-desc">Add this URL to your GitHub/GitLab repo's Webhook settings (content-type: application/json). Every push will auto-pull and restart the bot.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>Webhook URL <span class="hint">(add this to GitHub/GitLab)</span></label>
+        <div class="copy-row">
+          <input type="text" id="webhook-url" readonly>
+          <button class="hbtn hbtn-sm" onclick="copyWebhookUrl()">Copy</button>
+        </div>
+      </div>
+      <div class="fg">
+        <label>Secret Token <span class="hint">(paste into GitHub Webhook → Secret field)</span></label>
+        <div class="copy-row">
+          <input type="text" id="webhook-secret" readonly>
+          <button class="hbtn hbtn-sm" onclick="regenWebhookSecret()">↺ Regenerate</button>
+        </div>
+      </div>
+      <div class="webhook-steps">
+        <p><strong>Setup steps:</strong></p>
+        <ol>
+          <li>Copy the Webhook URL above</li>
+          <li>Go to your repo → Settings → Webhooks → Add webhook</li>
+          <li>Paste the URL, set Content-type to <code>application/json</code></li>
+          <li>Paste the Secret Token into the Secret field</li>
+          <li>Select <em>Just the push event</em> → Save</li>
+        </ol>
+      </div>
+    </div>
+    <div id="webhook-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeWebhookModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ZIP UPLOAD MODAL ──────────────────────────────────────── -->
+<div id="zip-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>📦 Deploy from ZIP — <span id="zip-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeZipModal()">✕</button>
+    </div>
+    <p class="modal-desc">Upload a .zip of your bot's source code. No git URL required. Replaces the current deployment.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>ZIP File</label>
+        <div class="file-drop-zone" id="zip-drop-zone" onclick="document.getElementById('zip-file-input').click()"
+             ondragover="event.preventDefault();this.classList.add('drag-over')"
+             ondragleave="this.classList.remove('drag-over')"
+             ondrop="handleZipDrop(event)">
+          <span id="zip-drop-label">📂 Click to select or drag & drop a .zip</span>
+          <input type="file" id="zip-file-input" accept=".zip" style="display:none" onchange="handleZipSelect(this)">
+        </div>
+      </div>
+      <div class="fg-row">
+        <div class="fg">
+          <label>Run Command <span class="hint">e.g. bot.py or main.py</span></label>
+          <input type="text" id="zip-run-command" placeholder="bot.py" value="bot.py">
+        </div>
+        <div class="fg">
+          <label>Python Version <span class="hint">optional</span></label>
+          <input type="text" id="zip-python-version" placeholder="3.11">
+        </div>
+      </div>
+      <div class="fg">
+        <label>Env Vars <span class="hint">one KEY=VALUE per line</span></label>
+        <textarea id="zip-env" rows="3" placeholder="TOKEN=abc123&#10;DEBUG=false"></textarea>
+      </div>
+    </div>
+    <div id="zip-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeZipModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="submitZipDeploy()">📦 Deploy ZIP</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ROLLBACK MODAL ────────────────────────────────────────── -->
+<div id="rollback-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>⏪ Rollback — <span id="rollback-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeRollbackModal()">✕</button>
+    </div>
+    <p class="modal-desc">Select a previous commit to roll back to. The bot will restart at that exact code version.</p>
+    <div class="mform">
+      <div id="commit-list" class="commit-list">
+        <div class="commit-loading">Loading commits…</div>
+      </div>
+    </div>
+    <div id="rollback-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeRollbackModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── SCHEDULE MODAL ────────────────────────────────────────── -->
+<div id="schedule-modal" class="modal-overlay">
+  <div class="modal-box modal-sm">
+    <div class="modal-header">
+      <h2>⏰ Schedule — <span id="sched-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeSchedModal()">✕</button>
+    </div>
+    <p class="modal-desc">Automatically git pull &amp; restart this bot every N hours. Useful for keeping bots updated without manual deploys.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>Interval <span class="hint">hours (min 0.25 = 15 min)</span></label>
+        <input type="number" id="sched-hours" value="24" min="0.25" step="0.25">
+      </div>
+      <div class="fg">
+        <label>Enabled</label>
+        <select id="sched-enabled" class="fg-select">
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      </div>
+      <div id="sched-current" class="health-state-box" style="display:none">
+        <div class="hsb-row"><span class="hsb-label">Next run</span><span id="sched-next">—</span></div>
+        <div class="hsb-row"><span class="hsb-label">Last run</span><span id="sched-last">—</span></div>
+      </div>
+    </div>
+    <div id="sched-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn hbtn-danger" onclick="removeSchedule()">🗑 Remove</button>
+      <button class="hbtn" onclick="closeSchedModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveSchedule()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── IMPORT RESULT TOAST ───────────────────────────────────── -->
 <div id="toast" class="toast"></div>
 
