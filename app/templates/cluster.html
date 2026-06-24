@@ -1,262 +1,407 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BotClusters</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/cluster.css') }}">
-    <link rel="shortcut icon" href="{{ url_for('static', filename='images/cluster.svg') }}" type="image/svg+xml">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
-    <style>
-        /* ── Modal base ─────────────────────────────────────── */
-        .modal-content { max-height: 90vh; overflow-y: auto; }
-
-        /* ── Form grid ──────────────────────────────────────── */
-        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 18px; }
-        .form-grid .full { grid-column: 1 / -1; }
-        .form-group { display: flex; flex-direction: column; gap: 4px; }
-        .form-group label {
-            font-size: .72rem; font-weight: 700; letter-spacing: .06em;
-            text-transform: uppercase; color: var(--text-muted, #888); }
-        .form-group input, .form-group select {
-            background: var(--bg-input, #1a1a2e);
-            border: 1px solid var(--border, #333);
-            color: var(--text, #eee); border-radius: 6px;
-            padding: 8px 10px; font-size: .875rem; outline: none;
-            transition: border-color .2s; }
-        .form-group input:focus { border-color: var(--accent, #7c3aed); }
-
-        /* ── Env pairs ──────────────────────────────────────── */
-        .env-pair { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
-        .env-pair input { flex: 1; }
-        .env-pair button {
-            background: transparent; border: 1px solid var(--border, #444);
-            color: #f87171; border-radius: 4px; padding: 4px 8px;
-            cursor: pointer; font-size: .8rem; flex-shrink: 0; }
-        #add-env-btn {
-            font-size: .78rem; background: transparent;
-            border: 1px dashed var(--border, #555); color: var(--text-muted, #888);
-            border-radius: 4px; padding: 4px 10px; cursor: pointer; margin-top: 4px; }
-        #add-env-btn:hover { border-color: var(--accent,#7c3aed); color: var(--accent,#7c3aed); }
-
-        /* ── Section label ──────────────────────────────────── */
-        .section-label {
-            font-size: .68rem; font-weight: 700; letter-spacing: .08em;
-            text-transform: uppercase; color: var(--text-muted, #888);
-            margin: 16px 0 8px; border-bottom: 1px solid var(--border, #333);
-            padding-bottom: 4px; }
-
-        /* ── Build log ──────────────────────────────────────── */
-        #build-log-wrap {
-            display: none; margin-top: 14px;
-            border: 1px solid var(--border, #333); border-radius: 8px;
-            overflow: hidden; }
-        #build-log-header {
-            display: flex; align-items: center; gap: 8px;
-            background: rgba(124,58,237,.12); padding: 7px 12px;
-            font-size: .72rem; font-weight: 700; letter-spacing: .06em;
-            text-transform: uppercase; color: #a78bfa; }
-        #build-log-header .dot {
-            width: 8px; height: 8px; border-radius: 50%;
-            background: #a78bfa; animation: pulse 1.2s infinite; }
-        @keyframes pulse {
-            0%,100% { opacity: 1; } 50% { opacity: .3; } }
-        #build-log {
-            background: #0d0d1a; color: #cdd6f4;
-            font-family: 'Courier New', monospace; font-size: .78rem;
-            line-height: 1.55; padding: 12px; max-height: 260px;
-            overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
-
-        /* ── Panel badge ─────────────────────────────────────── */
-        .panel-badge {
-            display: inline-flex; align-items: center; gap: 4px;
-            background: rgba(124,58,237,.15);
-            border: 1px solid rgba(124,58,237,.35);
-            color: #a78bfa; border-radius: 20px; padding: 2px 10px;
-            font-size: .72rem; font-weight: 600; text-decoration: none;
-            transition: background .2s; margin-left: 8px; vertical-align: middle; }
-        .panel-badge:hover { background: rgba(124,58,237,.3); }
-
-        /* ── Button overrides ───────────────────────────────── */
-        .add-bot-btn {
-            background: var(--accent, #7c3aed) !important;
-            color: #fff !important; border: none !important; }
-        .add-bot-btn:hover { opacity: .85; }
-        .remove-btn {
-            background: transparent !important;
-            border: 1px solid #f87171 !important; color: #f87171 !important; }
-        .remove-btn:hover { background: rgba(248,113,113,.15) !important; }
-        .pause-btn {
-            background: transparent !important;
-            border: 1px solid #fbbf24 !important; color: #fbbf24 !important; }
-        .pause-btn:hover { background: rgba(251,191,36,.12) !important; }
-        .clear-btn {
-            background: transparent !important;
-            border: 1px solid #818cf8 !important; color: #818cf8 !important; }
-        .clear-btn:hover { background: rgba(129,140,248,.12) !important; }
-
-        /* ── Modal action row ───────────────────────────────── */
-        .modal-actions { display: flex; gap: 10px; margin-top: 18px; }
-        #addbot-status { margin-top: 10px; font-size: .85rem; min-height: 1.2em; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BotClusters</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cluster.css') }}">
+  <link rel="shortcut icon" href="{{ url_for('static', filename='images/cluster.svg') }}" type="image/svg+xml">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script defer src="{{ url_for('static', filename='js/cluster.js') }}"></script>
 </head>
 <body>
 <div class="dashboard">
 
-    <!-- ── Header ─────────────────────────────────────────── -->
-    <div class="header">
-        <div class="header-top">
-            <div class="header-title">
-                <h1>BotClusters</h1>
-                <span class="header-badge" id="bot-count-badge">0 bots</span>
-            </div>
-            <div class="header-actions">
-                <button class="header-btn add-bot-btn" onclick="openAddBotModal()">
-                    <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M8 0a1 1 0 0 1 1 1v6h6a1 1 0 0 1 0 2H9v6a1 1 0 0 1-2 0V9H1a1 1 0 0 1 0-2h6V1a1 1 0 0 1 1-1z"/>
-                    </svg>
-                    Add Bot
-                </button>
-                <a href="/logstream" class="header-btn" target="_blank">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M2 2h12v2H2V2zm0 4h8v2H2V6zm0 4h10v2H2v-2zm0 4h6v2H2v-2z"/>
-                    </svg>
-                    Log Stream
-                </a>
-                <button class="header-btn" onclick="openCronModal()">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm0 14A6 6 0 1 1 8 2a6 6 0 0 1 0 12zm.5-9H7v5l4.3 2.5.7-1.2-3.5-2V5z"/>
-                    </svg>
-                    Cron
-                </button>
-                <a href="/logout" class="header-btn">Logout</a>
-            </div>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-top">
+      <div class="header-title">
+        <img src="{{ url_for('static', filename='images/cluster.svg') }}" width="28" height="28" alt="">
+        <h1>BotClusters</h1>
+        <span class="header-badge" id="bot-count-badge">0 bots</span>
+      </div>
+      <div class="header-actions">
+        <div class="search-wrap">
+          <span class="search-icon">⌕</span>
+          <input type="text" id="bot-search" placeholder="Search bots…" oninput="filterBots(this.value)">
         </div>
-        <div class="header-stats">
-            <div class="stat-pill stat-online">
-                <span class="stat-dot online"></span>
-                <span id="stat-online">0</span> Online
-            </div>
-            <div class="stat-pill stat-offline">
-                <span class="stat-dot offline"></span>
-                <span id="stat-offline">0</span> Offline
-            </div>
-            <div class="stat-pill stat-paused">
-                <span class="stat-dot paused"></span>
-                <span id="stat-paused">0</span> Paused
-            </div>
+        <button class="hbtn hbtn-primary" onclick="openAddModal()">＋ Add Bot</button>
+        <div class="dropdown-wrap">
+          <button class="hbtn" id="tools-btn" onclick="toggleToolsMenu()">⚙ Tools ▾</button>
+          <div class="dropdown-menu" id="tools-menu">
+            <a href="/logstream" target="_blank">📋 Log Stream</a>
+            <button onclick="openCronModal()">🕐 Cron Schedule</button>
+            <button onclick="openAlertModal()">🔔 Crash Alerts</button>
+            <button onclick="exportBots()">⬇ Export Bots</button>
+            <button onclick="document.getElementById('import-file').click()">⬆ Import Bots</button>
+            <input type="file" id="import-file" accept=".json" style="display:none" onchange="importBots(this)">
+            <hr>
+            <button onclick="restartAllBots()" class="danger-item">↺ Restart All</button>
+            <button onclick="stopAllBots()" class="danger-item">⏹ Stop All</button>
+          </div>
         </div>
+      </div>
     </div>
+    <div class="header-stats">
+      <div class="stat-pill stat-online"><span class="stat-dot online"></span><span id="stat-online">0</span> Online</div>
+      <div class="stat-pill stat-offline"><span class="stat-dot offline"></span><span id="stat-offline">0</span> Offline</div>
+      <div class="stat-pill stat-paused"><span class="stat-dot paused"></span><span id="stat-paused">0</span> Paused</div>
+      <div class="stat-pill stat-total" style="margin-left:auto"><span id="stat-total">0</span> Total</div>
+    </div>
+    <!-- Filter tabs -->
+    <div class="filter-tabs">
+      <button class="ftab active" data-filter="all" onclick="setFilter('all',this)">All</button>
+      <button class="ftab" data-filter="RUNNING" onclick="setFilter('RUNNING',this)">Running</button>
+      <button class="ftab" data-filter="STOPPED" onclick="setFilter('STOPPED',this)">Stopped</button>
+      <button class="ftab" data-filter="paused" onclick="setFilter('paused',this)">Paused</button>
+      <button class="ftab" data-filter="docker" onclick="setFilter('docker',this)">🐳 Docker</button>
+    </div>
+  </header>
 
-    <!-- ── Bot Grid ───────────────────────────────────────── -->
-    <div class="bot-grid" id="bot-grid"></div>
+  <!-- Bot Grid -->
+  <div class="bot-grid" id="bot-grid">
+    <div class="empty-state" id="empty-state" style="display:none">
+      <div class="empty-icon">🤖</div>
+      <h3>No bots yet</h3>
+      <p>Click <strong>+ Add Bot</strong> to deploy your first bot from any Git repository.</p>
+      <button class="hbtn hbtn-primary" onclick="openAddModal()">＋ Add Bot</button>
+    </div>
+  </div>
+
 </div>
 
-<!-- ── Log Modal ──────────────────────────────────────────── -->
-<div id="log-modal" class="modal">
-    <div class="modal-content">
-        <span class="close" onclick="closeModal('log-modal')">&times;</span>
-        <h2>Process Logs</h2>
-        <pre id="log-content"></pre>
+<!-- ── ADD BOT MODAL ─────────────────────────────────────────── -->
+<div id="add-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>＋ Add Bot</h2>
+      <button class="modal-close" onclick="closeAddModal()">✕</button>
     </div>
+
+    <!-- Deploy type tabs -->
+    <div class="dtabs">
+      <button class="dtab active" id="dtab-git" onclick="switchDeployTab('git')">🐍 Git / Python</button>
+      <button class="dtab" id="dtab-docker" onclick="switchDeployTab('docker')">🐳 Dockerfile</button>
+    </div>
+
+    <div class="mform">
+      <div class="fg-row">
+        <div class="fg">
+          <label>Bot Name <span class="hint">must end with bot1, bot2…</span></label>
+          <input type="text" id="add-name" placeholder="e.g. my bot1">
+        </div>
+        <div class="fg">
+          <label>Git URL</label>
+          <input type="text" id="add-git-url" placeholder="https://github.com/user/repo">
+        </div>
+      </div>
+      <div class="fg-row">
+        <div class="fg">
+          <label>Branch</label>
+          <input type="text" id="add-branch" value="main">
+        </div>
+        <div class="fg" id="fg-run-command">
+          <label>Run Command <span class="hint">e.g. bot.py or run.sh</span></label>
+          <input type="text" id="add-run-command" placeholder="bot.py">
+        </div>
+        <div class="fg" id="fg-python-version">
+          <label>Python Version <span class="hint">optional, e.g. 3.11</span></label>
+          <input type="text" id="add-python-version" placeholder="3.11">
+        </div>
+        <div class="fg" id="fg-web-port" style="display:none">
+          <label>Web Port <span class="hint">optional – exposes /botN proxy</span></label>
+          <input type="number" id="add-web-port" placeholder="8080" min="1" max="65535">
+        </div>
+      </div>
+      <div class="fg">
+        <label>Environment Variables <span class="hint">one KEY=VALUE per line</span></label>
+        <textarea id="add-env" rows="4" placeholder="TOKEN=abc123&#10;API_KEY=xyz&#10;DEBUG=false"></textarea>
+      </div>
+      <div class="fg" id="fg-build-args" style="display:none">
+        <label>Build Args <span class="hint">one KEY=VALUE per line</span></label>
+        <textarea id="add-build-args" rows="2" placeholder="PYTHON_VERSION=3.11"></textarea>
+      </div>
+    </div>
+
+    <div id="add-status" class="status-banner" style="display:none"></div>
+
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeAddModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="submitAddBot()">🚀 Deploy</button>
+    </div>
+  </div>
 </div>
 
-<!-- ── Cron Modal ─────────────────────────────────────────── -->
-<div id="cron-modal" class="modal">
-    <div class="modal-content modal-sm">
-        <span class="close" onclick="closeCronModal()">&times;</span>
-        <h2>Restart Schedule</h2>
-        <p class="modal-desc">Auto-restart all bots every N hours. Set to 0 to disable.</p>
-        <div class="cron-input-group">
-            <input type="number" id="cron-hours" min="0" max="720" value="0" placeholder="Hours">
-            <span class="cron-unit">hours</span>
-        </div>
-        <div class="cron-actions">
-            <button class="control-btn save-btn"   onclick="saveCron()">Save</button>
-            <button class="control-btn cancel-btn" onclick="closeCronModal()">Cancel</button>
-        </div>
+<!-- ── LOG VIEWER MODAL ──────────────────────────────────────── -->
+<div id="log-modal" class="modal-overlay">
+  <div class="modal-box modal-xl">
+    <div class="modal-header">
+      <h2>📋 Logs — <span id="log-modal-title"></span></h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="hbtn hbtn-sm" onclick="clearLogView()">Clear view</button>
+        <button class="hbtn hbtn-sm" onclick="downloadCurrentLog()">⬇ Download</button>
+        <button class="modal-close" onclick="closeLogModal()">✕</button>
+      </div>
     </div>
+    <div class="log-toolbar">
+      <input type="text" id="log-search" placeholder="Filter log lines…" oninput="filterLogLines(this.value)">
+      <label class="toggle-wrap"><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+    </div>
+    <pre class="log-pre" id="log-content"></pre>
+  </div>
 </div>
 
-<!-- ── Add Bot Modal ──────────────────────────────────────── -->
-<div id="addbot-modal" class="modal">
-    <div class="modal-content" style="max-width:600px">
-        <span class="close" onclick="closeAddBotModal()">&times;</span>
-        <h2>Add New Bot</h2>
-        <p class="modal-desc">Clone a GitHub repo and start it as a supervised process.</p>
-
-        <div class="section-label">Bot Config</div>
-        <div class="form-grid">
-            <div class="form-group">
-                <label>Bot Name *</label>
-                <input type="text" id="ab-name" placeholder="mybot">
-            </div>
-            <div class="form-group">
-                <label>Branch *</label>
-                <input type="text" id="ab-branch" value="main" placeholder="main">
-            </div>
-            <div class="form-group full">
-                <label>Git URL *</label>
-                <input type="text" id="ab-git" placeholder="https://github.com/you/bot.git">
-            </div>
-            <div class="form-group">
-                <label>Run Command *</label>
-                <input type="text" id="ab-run" placeholder="bot.py">
-            </div>
-            <div class="form-group">
-                <label>Python Version</label>
-                <input type="text" id="ab-pyver" placeholder="3.11 (optional)">
-            </div>
-        </div>
-
-        <div class="section-label">
-            Environment Variables
-            <span style="font-weight:400;text-transform:none;font-size:.8rem"> (optional)</span>
-        </div>
-        <div id="env-pairs"></div>
-        <button id="add-env-btn" onclick="addEnvPair()">+ Add Variable</button>
-
-        <div class="section-label">
-            Web Panel
-            <span style="font-weight:400;text-transform:none;font-size:.8rem"> (optional — if your bot has a web UI)</span>
-        </div>
-        <div class="form-grid">
-            <div class="form-group">
-                <label>Panel Port</label>
-                <input type="number" id="ab-port" placeholder="e.g. 8080">
-            </div>
-            <div class="form-group">
-                <label>Panel Label</label>
-                <input type="text" id="ab-label" placeholder="My Bot Panel">
-            </div>
-        </div>
-
-        <!-- Build log ----------------------------------------->
-        <div id="build-log-wrap">
-            <div id="build-log-header">
-                <span class="dot" id="build-dot"></span>
-                Build Output
-            </div>
-            <pre id="build-log"></pre>
-        </div>
-
-        <div class="modal-actions">
-            <button class="control-btn save-btn" id="addbot-submit-btn" onclick="submitAddBot()">
-                Add Bot
-            </button>
-            <button class="control-btn cancel-btn" onclick="closeAddBotModal()">Cancel</button>
-        </div>
-        <div id="addbot-status"></div>
+<!-- ── CRON MODAL ────────────────────────────────────────────── -->
+<div id="cron-modal" class="modal-overlay">
+  <div class="modal-box modal-sm">
+    <div class="modal-header">
+      <h2>🕐 Cron Schedule</h2>
+      <button class="modal-close" onclick="closeCronModal()">✕</button>
     </div>
+    <p class="modal-desc">Restart all bots every N hours. Set to 0 to disable.</p>
+    <div class="cron-row">
+      <input type="number" id="cron-hours" min="0" max="720" value="0" placeholder="0">
+      <span class="cron-unit">hours</span>
+    </div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeCronModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveCron()">Save</button>
+    </div>
+  </div>
 </div>
 
-<footer id="contact">
-    <div class="container">
-        <p>&copy; 2025 MysteryDemon. All Rights Reserved.</p>
-        <p>Visit me on <a href="https://github.com/mysterydemon" target="_blank">GitHub</a></p>
+<!-- ── CONFIRM MODAL ─────────────────────────────────────────── -->
+<div id="confirm-modal" class="modal-overlay">
+  <div class="modal-box modal-sm">
+    <div class="modal-header">
+      <h2 id="confirm-title">Confirm</h2>
     </div>
+    <p id="confirm-body" class="modal-desc"></p>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeConfirm()">Cancel</button>
+      <button class="hbtn hbtn-danger" id="confirm-ok-btn" onclick="confirmOk()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── METRICS MODAL ─────────────────────────────────────────── -->
+<div id="metrics-modal" class="modal-overlay">
+  <div class="modal-box modal-xl">
+    <div class="modal-header">
+      <h2>📊 Metrics — <span id="metrics-modal-title"></span></h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="metrics-window" onchange="changeMetricsWindow(this.value)" class="hbtn" style="padding:5px 10px;cursor:pointer">
+          <option value="30">Last 30 min</option>
+          <option value="60" selected>Last 1 hour</option>
+          <option value="360">Last 6 hours</option>
+          <option value="1440">Last 24 hours</option>
+        </select>
+        <button class="modal-close" onclick="closeMetricsModal()">✕</button>
+      </div>
+    </div>
+
+    <!-- Summary pills -->
+    <div class="metrics-summary" id="metrics-summary">
+      <div class="msumm-pill">
+        <span class="msumm-label">CPU</span>
+        <span class="msumm-val" id="ms-cpu">—</span>
+      </div>
+      <div class="msumm-pill">
+        <span class="msumm-label">Memory</span>
+        <span class="msumm-val" id="ms-mem">—</span>
+      </div>
+      <div class="msumm-pill">
+        <span class="msumm-label">Uptime</span>
+        <span class="msumm-val" id="ms-uptime">—</span>
+      </div>
+      <div class="msumm-pill">
+        <span class="msumm-label">Restarts</span>
+        <span class="msumm-val" id="ms-restarts">—</span>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="metrics-charts">
+      <div class="chart-wrap">
+        <div class="chart-label">CPU %</div>
+        <canvas id="cpu-chart" height="110"></canvas>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-label">Memory (MB)</div>
+        <canvas id="mem-chart" height="110"></canvas>
+      </div>
+    </div>
+
+    <!-- Uptime history bar -->
+    <div class="uptime-section">
+      <div class="uptime-section-label">Uptime history (last 7 days)</div>
+      <div id="uptime-bar-wrap" class="uptime-bar-wrap"></div>
+      <div class="uptime-legend">
+        <span class="ul-dot ul-online"></span>Online
+        <span class="ul-dot ul-crash" style="margin-left:12px"></span>Crash
+        <span class="ul-dot ul-stopped" style="margin-left:12px"></span>Stopped
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── ALERT CONFIG MODAL ────────────────────────────────────── -->
+<div id="alert-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>🔔 Crash Alerts</h2>
+      <button class="modal-close" onclick="closeAlertModal()">✕</button>
+    </div>
+    <p class="modal-desc">Get notified on Telegram or Discord when a bot crashes or restarts.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>Telegram Bot Token</label>
+        <input type="password" id="alert-tg-token" placeholder="123456:ABC-…">
+      </div>
+      <div class="fg">
+        <label>Telegram Chat ID <span class="hint">your user ID or group ID</span></label>
+        <input type="text" id="alert-tg-chat" placeholder="-100123456789">
+      </div>
+      <div class="fg">
+        <label>Discord Webhook URL</label>
+        <input type="text" id="alert-discord" placeholder="https://discord.com/api/webhooks/…">
+      </div>
+    </div>
+    <div id="alert-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="testAlert()">📨 Send Test</button>
+      <button class="hbtn" onclick="closeAlertModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveAlerts()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── STDIN MODAL ────────────────────────────────────────────── -->
+<div id="stdin-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>⌨ stdin — <span id="stdin-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeStdinModal()">✕</button>
+    </div>
+    <p class="modal-desc">Type a command and press Enter or click Send. The line will be written to the bot's standard input.</p>
+    <div class="mform">
+      <div class="stdin-history" id="stdin-history"></div>
+      <div class="stdin-input-row">
+        <span class="stdin-prompt">$</span>
+        <input type="text" id="stdin-line" placeholder="Type a command…" onkeydown="if(event.key==='Enter') sendStdin()">
+        <button class="hbtn hbtn-primary" onclick="sendStdin()">Send</button>
+      </div>
+    </div>
+    <div id="stdin-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeStdinModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── ENV EDITOR MODAL ──────────────────────────────────────── -->
+<div id="env-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>🔧 Env Vars — <span id="env-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeEnvModal()">✕</button>
+    </div>
+    <p class="modal-desc">Edit environment variables live. Save &amp; Restart applies changes immediately without a full redeploy.</p>
+    <div class="mform">
+      <div id="env-rows"></div>
+      <button class="hbtn" style="margin-top:4px" onclick="addEnvRow()">＋ Add Variable</button>
+    </div>
+    <div id="env-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn" onclick="closeEnvModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveEnv(false)">Save Only</button>
+      <button class="hbtn hbtn-primary" onclick="saveEnv(true)">💾 Save &amp; Restart</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── HEALTH CHECK MODAL ────────────────────────────────────── -->
+<div id="health-modal" class="modal-overlay">
+  <div class="modal-box modal-lg">
+    <div class="modal-header">
+      <h2>🏥 Health Check — <span id="health-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeHealthModal()">✕</button>
+    </div>
+    <p class="modal-desc">BotClusters will ping this URL every N seconds. If it fails <strong>3 times in a row</strong>, the bot is auto-restarted and you get a crash alert.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>Health Check URL</label>
+        <input type="text" id="health-url" placeholder="http://localhost:8080/health">
+      </div>
+      <div class="fg-row">
+        <div class="fg">
+          <label>Check Interval <span class="hint">seconds, min 10</span></label>
+          <input type="number" id="health-interval" value="30" min="10">
+        </div>
+        <div class="fg">
+          <label>Timeout <span class="hint">seconds, min 2</span></label>
+          <input type="number" id="health-timeout" value="5" min="2">
+        </div>
+        <div class="fg">
+          <label>Enabled</label>
+          <select id="health-enabled" class="fg-select">
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        </div>
+      </div>
+      <div class="health-state-box" id="health-state-box" style="display:none">
+        <div class="hsb-row"><span class="hsb-label">Status</span><span id="hsb-status">—</span></div>
+        <div class="hsb-row"><span class="hsb-label">Last OK</span><span id="hsb-last-ok">—</span></div>
+        <div class="hsb-row"><span class="hsb-label">Failures</span><span id="hsb-failures">0</span></div>
+      </div>
+    </div>
+    <div id="health-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn hbtn-danger" onclick="removeHealth()">🗑 Remove</button>
+      <button class="hbtn" onclick="closeHealthModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveHealth()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── RATE LIMIT MODAL ──────────────────────────────────────── -->
+<div id="ratelimit-modal" class="modal-overlay">
+  <div class="modal-box modal-sm">
+    <div class="modal-header">
+      <h2>🚦 Rate Limit — <span id="rl-modal-title"></span></h2>
+      <button class="modal-close" onclick="closeRlModal()">✕</button>
+    </div>
+    <p class="modal-desc">Cap how many times this bot can restart within a rolling window. Helps stop infinite crash loops from consuming resources.</p>
+    <div class="mform">
+      <div class="fg">
+        <label>Max Restarts</label>
+        <input type="number" id="rl-max" value="5" min="1" max="100">
+      </div>
+      <div class="fg">
+        <label>Window <span class="hint">seconds</span></label>
+        <input type="number" id="rl-window" value="3600" min="60">
+      </div>
+      <div id="rl-current" class="health-state-box" style="display:none">
+        <div class="hsb-row"><span class="hsb-label">Remaining</span><span id="rl-remaining">—</span></div>
+        <div class="hsb-row"><span class="hsb-label">Window</span><span id="rl-window-disp">—</span></div>
+      </div>
+    </div>
+    <div id="rl-status" class="status-banner" style="display:none"></div>
+    <div class="modal-footer">
+      <button class="hbtn hbtn-danger" onclick="removeRateLimit()">🗑 Remove</button>
+      <button class="hbtn" onclick="closeRlModal()">Cancel</button>
+      <button class="hbtn hbtn-primary" onclick="saveRateLimit()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── IMPORT RESULT TOAST ───────────────────────────────────── -->
+<div id="toast" class="toast"></div>
+
+<footer class="footer">
+  <p>BotClusters &nbsp;·&nbsp; <a href="https://github.com/mysterydemon" target="_blank">GitHub</a></p>
 </footer>
-
-<script src="{{ url_for('static', filename='js/cluster.js') }}"></script>
 </body>
 </html>

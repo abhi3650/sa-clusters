@@ -1,416 +1,1095 @@
+// ════════════════════════════════════════════════════════════════
+//  BotClusters — cluster.js  (v3)
+// ════════════════════════════════════════════════════════════════
 let socket;
 let updateInterval;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
 let lastKnownProcesses = [];
-let _buildEventSource = null;
+let activeFilter = 'all';
+let searchQuery   = '';
+let currentLogProcess = null;
+let logSSE = null;
+let confirmCallback = null;
+let deployTab = 'git';
 
-// ── Socket.IO ──────────────────────────────────────────────────
+// ── Socket setup ─────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', function () {
-    socket = io({
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
+document.addEventListener('DOMContentLoaded', () => {
+  socket = io({ reconnection: true, reconnectionDelay: 1000,
+                reconnectionDelayMax: 5000, reconnectionAttempts: 10 });
+
+  socket.on('connect', () => {
+    requestStatus();
+    if (updateInterval) clearInterval(updateInterval);
+    updateInterval = setInterval(requestStatus, 4000);
+  });
+
+  socket.on('disconnect', () => { if (updateInterval) clearInterval(updateInterval); });
+
+  socket.on('status_update', (data) => {
+    if (data.processes && data.processes.length > 0) {
+      lastKnownProcesses = data.processes;
+    }
+    renderGrid(lastKnownProcesses);
+  });
+
+  loadCronSetting();
+
+  // Close dropdowns on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#tools-btn') && !e.target.closest('#tools-menu')) {
+      document.getElementById('tools-menu').classList.remove('open');
+    }
+  });
+
+  // Close modals on overlay click
+  document.querySelectorAll('.modal-overlay').forEach(overlay => {
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) overlay.style.display = 'none';
     });
-
-    socket.on('connect', function () {
-        reconnectAttempts = 0;
-        requestStatus();
-        if (updateInterval) clearInterval(updateInterval);
-        updateInterval = setInterval(requestStatus, 3000);
-    });
-
-    socket.on('disconnect', function () {
-        if (updateInterval) clearInterval(updateInterval);
-    });
-
-    socket.on('connect_error', function () { reconnectAttempts++; });
-
-    socket.on('status_update', function (data) {
-        if (data.processes && data.processes.length > 0) {
-            lastKnownProcesses = data.processes;
-            updateBotCards(data.processes);
-        } else if (lastKnownProcesses.length > 0) {
-            updateBotCards(lastKnownProcesses);
-        }
-    });
-
-    window.onclick = function (e) {
-        ['log-modal', 'cron-modal', 'addbot-modal'].forEach(id => {
-            const m = document.getElementById(id);
-            if (e.target === m) closeModal(id);
-        });
-    };
-
-    loadCronSetting();
+  });
 });
 
 function requestStatus() {
-    if (socket && socket.connected) socket.emit('request_status');
-    else socket.connect();
+  if (socket && socket.connected) socket.emit('request_status');
+  else if (socket) socket.connect();
 }
 
-// ── Bot card rendering ─────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { requestStatus(); updateInterval = setInterval(requestStatus, 4000); }
+  else clearInterval(updateInterval);
+});
+
+// ── Helpers ──────────────────────────────────────────────────
 
 function getBotNumber(name) {
-    const m = name.match(/(\d+)$/);
-    return m ? parseInt(m[1]) : null;
-}
-
-function sortProcesses(ps) {
-    return [...ps].sort((a, b) => {
-        const na = getBotNumber(a.name) ?? Infinity;
-        const nb = getBotNumber(b.name) ?? Infinity;
-        if (na !== nb) return na - nb;
-        return a.name.localeCompare(b.name);
-    });
+  const m = name.match(/bot(\d+)$/i);
+  return m ? parseInt(m[1]) : null;
 }
 
 function formatBotName(name) {
-    const n = getBotNumber(name);
-    return n !== null ? `Bot #${n}` : name;
+  const n = getBotNumber(name);
+  return n ? `Bot #${n}` : name;
 }
 
-function updateBotCards(processes) {
-    const grid = document.getElementById('bot-grid');
-    if (!grid) return;
-    const sorted = sortProcesses(processes);
-    let online = 0, offline = 0, paused = 0;
-    grid.innerHTML = '';
-
-    sorted.forEach(proc => {
-        const isRunning   = proc.status === 'RUNNING';
-        const isPaused    = proc.paused;
-        const isAutoPaused = proc.auto_paused;
-        const panelSlug   = proc.panel_slug;
-
-        if (isRunning && !isPaused && !isAutoPaused) online++;
-        else if (isPaused || isAutoPaused) paused++;
-        else offline++;
-
-        let statusClass, statusLabel;
-        if (isAutoPaused)       { statusClass = 'status-fatal';   statusLabel = 'Failed';  }
-        else if (isPaused)      { statusClass = 'status-paused';  statusLabel = 'Paused';  }
-        else if (isRunning)     { statusClass = 'status-online';  statusLabel = 'Online';  }
-        else                    { statusClass = 'status-offline'; statusLabel = 'Offline'; }
-
-        const panelBadge = panelSlug
-            ? `<a href="/${panelSlug}" target="_blank" class="panel-badge">
-                 <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor">
-                   <path d="M2 2h12v2H2zm0 4h8v2H2zm0 4h10v2H2zm0 4h6v2H2z"/>
-                 </svg>/${panelSlug}</a>`
-            : '';
-
-        const esc = s => s.replace(/'/g, "\\'");
-
-        let controls;
-        if (isAutoPaused) {
-            controls = `
-              <button onclick="clearFailure('${esc(proc.name)}')" class="control-btn clear-btn">Clear &amp; Restart</button>
-              <button onclick="viewLogs('${esc(proc.name)}')"     class="control-btn log-btn">Logs</button>
-              <button onclick="removeBot('${esc(proc.name)}')"    class="control-btn remove-btn">Remove</button>`;
-        } else {
-            const pauseLabel  = isPaused ? 'Resume' : 'Pause';
-            const pauseAction = isPaused
-                ? `resumeBot('${esc(proc.name)}')`
-                : `pauseBot('${esc(proc.name)}')`;
-            controls = `
-              <button onclick="toggleBot('${esc(proc.name)}','${proc.status}')"
-                      class="control-btn ${isRunning ? 'stop-btn' : 'start-btn'}">
-                ${isRunning ? 'Stop' : 'Start'}
-              </button>
-              <button onclick="restartBot('${esc(proc.name)}')"
-                      class="control-btn restart-btn" ${!isRunning ? 'disabled' : ''}>Restart</button>
-              <button onclick="${pauseAction}"
-                      class="control-btn pause-btn"   ${!isRunning ? 'disabled' : ''}>${pauseLabel}</button>
-              <button onclick="viewLogs('${esc(proc.name)}')"  class="control-btn log-btn">Logs</button>
-              <button onclick="removeBot('${esc(proc.name)}')" class="control-btn remove-btn">Remove</button>`;
-        }
-
-        const utcTime = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        const card = document.createElement('div');
-        card.className = 'bot-card' + (isAutoPaused ? ' card-fatal' : '');
-        card.innerHTML = `
-          <div class="bot-header">
-            <h2>${formatBotName(proc.name)}${panelBadge}</h2>
-            <span class="bot-status ${statusClass}">${statusLabel}</span>
-          </div>
-          <div class="bot-info">
-            <p><strong>Process:</strong> ${proc.name}</p>
-            <p><strong>Status:</strong>  ${proc.status}</p>
-            <p><strong>PID:</strong>     ${proc.pid    || 'N/A'}</p>
-            <p><strong>Uptime:</strong>  ${proc.uptime || '0:00:00'}</p>
-            <p><strong>Updated:</strong> ${utcTime}</p>
-          </div>
-          <div class="bot-controls">${controls}</div>`;
-        grid.appendChild(card);
-    });
-
-    const $  = id => document.getElementById(id);
-    if ($('stat-online'))     $('stat-online').textContent  = online;
-    if ($('stat-offline'))    $('stat-offline').textContent = offline;
-    if ($('stat-paused'))     $('stat-paused').textContent  = paused;
-    if ($('bot-count-badge')) $('bot-count-badge').textContent =
-        `${sorted.length} bot${sorted.length !== 1 ? 's' : ''}`;
+function parseEnvText(text) {
+  const env = {};
+  (text || '').split('\n').forEach(line => {
+    line = line.trim();
+    if (!line || !line.includes('=')) return;
+    const idx = line.indexOf('=');
+    env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  return env;
 }
 
-// ── Bot actions ────────────────────────────────────────────────
+function showToast(msg, type = 'info', duration = 3500) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast toast-${type} show`;
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+
+function confirmAction(title, body, okLabel, danger, cb) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-body').textContent  = body;
+  const btn = document.getElementById('confirm-ok-btn');
+  btn.textContent  = okLabel;
+  btn.className    = danger ? 'hbtn hbtn-danger' : 'hbtn hbtn-primary';
+  confirmCallback  = cb;
+  document.getElementById('confirm-modal').style.display = 'flex';
+}
+
+function confirmOk() {
+  closeConfirm();
+  if (confirmCallback) confirmCallback();
+}
+
+function closeConfirm() {
+  document.getElementById('confirm-modal').style.display = 'none';
+  confirmCallback = null;
+}
+
+// ── Filter / search ───────────────────────────────────────────
+
+function setFilter(f, el) {
+  activeFilter = f;
+  document.querySelectorAll('.ftab').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  renderGrid(lastKnownProcesses);
+}
+
+function filterBots(q) {
+  searchQuery = q.toLowerCase();
+  renderGrid(lastKnownProcesses);
+}
+
+function applyFilters(processes) {
+  return processes.filter(p => {
+    if (searchQuery && !p.name.toLowerCase().includes(searchQuery) &&
+        !formatBotName(p.name).toLowerCase().includes(searchQuery)) return false;
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'RUNNING') return p.status === 'RUNNING';
+    if (activeFilter === 'STOPPED') return p.status !== 'RUNNING' && !p.paused && !p.auto_paused;
+    if (activeFilter === 'paused')  return p.paused || p.auto_paused;
+    if (activeFilter === 'docker')  return p.is_docker;
+    return true;
+  });
+}
+
+// ── Grid renderer ─────────────────────────────────────────────
+
+function renderGrid(processes) {
+  const grid = document.getElementById('bot-grid');
+  const empty = document.getElementById('empty-state');
+  if (!grid) return;
+
+  const sorted = [...processes].sort((a, b) => (getBotNumber(a.name)||0) - (getBotNumber(b.name)||0));
+  const filtered = applyFilters(sorted);
+
+  // Stats
+  let online = 0, offline = 0, paused = 0;
+  sorted.forEach(p => {
+    if (p.status === 'RUNNING' && !p.paused && !p.auto_paused) online++;
+    else if (p.paused || p.auto_paused) paused++;
+    else offline++;
+  });
+  document.getElementById('stat-online').textContent  = online;
+  document.getElementById('stat-offline').textContent = offline;
+  document.getElementById('stat-paused').textContent  = paused;
+  document.getElementById('stat-total').textContent   = sorted.length;
+  const badge = document.getElementById('bot-count-badge');
+  if (badge) badge.textContent = `${sorted.length} bot${sorted.length !== 1 ? 's' : ''}`;
+
+  if (sorted.length === 0) {
+    empty.style.display = 'flex';
+    // Remove old cards but keep empty state
+    Array.from(grid.children).forEach(c => { if (c !== empty) c.remove(); });
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Build cards — update existing, add new, remove old
+  const existingCards = {};
+  grid.querySelectorAll('.bot-card').forEach(c => { existingCards[c.dataset.name] = c; });
+
+  const rendered = new Set();
+  filtered.forEach((p, idx) => {
+    rendered.add(p.name);
+    let card = existingCards[p.name];
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'bot-card';
+      card.dataset.name = p.name;
+      grid.appendChild(card);
+    }
+    updateCard(card, p);
+  });
+
+  // Remove cards not in filtered set
+  Object.entries(existingCards).forEach(([name, card]) => {
+    if (!rendered.has(name)) card.remove();
+  });
+}
+
+function updateCard(card, p) {
+  const isRunning    = p.status === 'RUNNING';
+  const isPaused     = p.paused;
+  const isAutoPaused = p.auto_paused;
+  const isDocker     = p.is_docker;
+  const botNum       = getBotNumber(p.name);
+  const hasWebUI     = isDocker && p.web_port && botNum && isRunning;
+
+  let statusClass, statusLabel;
+  if      (isAutoPaused)         { statusClass = 'status-fatal';   statusLabel = 'Failed'; }
+  else if (isPaused)             { statusClass = 'status-paused';  statusLabel = 'Paused'; }
+  else if (isRunning)            { statusClass = 'status-online';  statusLabel = 'Running'; }
+  else if (p.status === 'STARTING') { statusClass = 'status-starting'; statusLabel = 'Starting'; }
+  else                           { statusClass = 'status-offline'; statusLabel = p.status || 'Stopped'; }
+
+  card.className = 'bot-card' + (isAutoPaused ? ' card-fatal' : '') +
+                   (isPaused ? ' card-paused' : '') +
+                   (isRunning && !isPaused ? ' card-running' : '');
+
+  const dockerBadge = isDocker
+    ? `<span class="tag tag-docker" title="Docker container">🐳</span>`
+    : `<span class="tag tag-git" title="Git/Python">🐍</span>`;
+
+  const webUIBtn = hasWebUI
+    ? `<a href="/bot${botNum}" target="_blank" class="cbtn cbtn-webui" title="Open web UI">🌐</a>` : '';
+
+  const progressBar = isRunning
+    ? `<div class="uptime-bar"><div class="uptime-fill" style="width:100%"></div></div>` : '';
+
+  let controls = '';
+  if (isAutoPaused) {
+    controls = `
+      <button class="cbtn cbtn-start" onclick="clearFailure('${p.name}')">↺ Retry</button>
+      <button class="cbtn cbtn-log"   onclick="openLogModal('${p.name}')">📋 Logs</button>
+      <button class="cbtn cbtn-delete" onclick="deleteBot('${p.name}')">🗑</button>
+    `;
+  } else {
+    controls = `
+      <button class="cbtn ${isRunning ? 'cbtn-stop' : 'cbtn-start'}"
+              onclick="toggleBot('${p.name}','${p.status}')">
+        ${isRunning ? '⏹ Stop' : '▶ Start'}
+      </button>
+      <button class="cbtn cbtn-restart" onclick="restartBot('${p.name}')" ${!isRunning?'disabled':''}>↺</button>
+      <button class="cbtn cbtn-pause"   onclick="${isPaused ? `resumeBot('${p.name}')` : `pauseBot('${p.name}')`}"
+              ${!isRunning && !isPaused ? 'disabled':''}>
+        ${isPaused ? '▶ Resume' : '⏸ Pause'}
+      </button>
+      <button class="cbtn cbtn-log"    onclick="openLogModal('${p.name}')">📋</button>
+      <button class="cbtn cbtn-metrics" onclick="openMetricsModal('${p.name}')">📊</button>
+      <button class="cbtn cbtn-env"    onclick="openEnvModal('${p.name}')" title="Edit env vars">🔧</button>
+      <button class="cbtn cbtn-stdin"  onclick="openStdinModal('${p.name}')" ${!isRunning?'disabled':''} title="Inject stdin">⌨</button>
+      <button class="cbtn cbtn-health" onclick="openHealthModal('${p.name}')" title="Health check">${p.health ? (p.health.ok ? '🟢' : '🔴') : '🏥'}</button>
+      <button class="cbtn cbtn-rl"     onclick="openRlModal('${p.name}')" title="Rate limit">${p.rate_limit?.limited ? '🚫' : '🚦'}</button>
+      ${webUIBtn}
+      <button class="cbtn cbtn-delete" onclick="deleteBot('${p.name}')">🗑</button>
+    `;
+  }
+
+  const uptimeLine = isRunning && p.uptime
+    ? `<span class="meta-item">⏱ ${p.uptime}</span>` : '';
+  const pidLine = p.pid
+    ? `<span class="meta-item">PID ${p.pid}</span>` : '';
+  const portLine = hasWebUI
+    ? `<span class="meta-item">:${p.web_port}</span>` : '';
+  const gitLine = p.git_url
+    ? `<span class="meta-item meta-git" title="${p.git_url}">⎇ ${p.branch||'main'}</span>` : '';
+
+  const cpuLine   = (isRunning && p.cpu  !== undefined) ? `<span class="meta-item meta-cpu" title="CPU">⚡ ${p.cpu}%</span>` : '';
+  const memLine   = (isRunning && p.mem_mb !== undefined && p.mem_mb > 0) ? `<span class="meta-item meta-mem" title="RAM">💾 ${p.mem_mb}MB</span>` : '';
+  const rcLine    = (p.restart_count > 0) ? `<span class="meta-item meta-rc" title="Total restarts">↺ ${p.restart_count}</span>` : '';
+  const healthLine = p.health
+    ? `<span class="meta-item ${p.health.ok ? 'meta-health-ok' : 'meta-health-fail'}" title="Health: ${p.health.url}">${p.health.ok ? '🟢 Healthy' : `🔴 ${p.health.failures} fail${p.health.failures!==1?'s':''}`}</span>` : '';
+  const rlLine    = (p.rate_limit?.limited)
+    ? `<span class="meta-item meta-rl-limited" title="Rate limited">🚫 Rate limited</span>` : '';
+
+  card.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">${formatBotName(p.name)}</span>
+      <div class="card-badges">${dockerBadge}<span class="tag ${statusClass}">${statusLabel}</span></div>
+    </div>
+    <div class="card-meta">
+      ${uptimeLine}${pidLine}${portLine}${gitLine}${cpuLine}${memLine}${rcLine}${healthLine}${rlLine}
+    </div>
+    ${progressBar}
+    <div class="card-controls">${controls}</div>
+  `;
+}
+
+// ── Bot actions ───────────────────────────────────────────────
 
 function toggleBot(name, status) {
-    const action = status === 'RUNNING' ? 'stop' : 'start';
-    if (action === 'stop' && !confirm(`Stop ${formatBotName(name)}?`)) return;
-    fetch(`/supervisor/${action}/${name}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 1000); else alert(d.message); })
-        .catch(() => alert(`Failed to ${action}.`));
+  const action = status === 'RUNNING' ? 'stop' : 'start';
+  if (action === 'stop') {
+    confirmAction(`Stop ${formatBotName(name)}?`,
+      'The bot process will be stopped.',
+      'Stop', true, () => _supervisorAction(action, name));
+  } else {
+    _supervisorAction(action, name);
+  }
 }
 
 function restartBot(name) {
-    if (!confirm(`Restart ${formatBotName(name)}?`)) return;
-    fetch(`/supervisor/restart/${name}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 2000); else alert(d.message); })
-        .catch(() => alert('Failed to restart.'));
+  confirmAction(`Restart ${formatBotName(name)}?`,
+    'The bot will pull latest code and restart.',
+    'Restart', false, () => _supervisorAction('restart', name));
 }
 
 function pauseBot(name) {
-    fetch(`/supervisor/pause/${name}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 1000); else alert(d.message); });
+  fetch(`/supervisor/pause/${name}`, { method:'POST' })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { showToast(`Paused ${formatBotName(name)}`,'info'); setTimeout(requestStatus,800); }
+      else showToast(`Error: ${d.message}`,'error');
+    });
 }
 
 function resumeBot(name) {
-    fetch(`/supervisor/resume/${name}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 1000); else alert(d.message); });
+  fetch(`/supervisor/resume/${name}`, { method:'POST' })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { showToast(`Resumed ${formatBotName(name)}`,'success'); setTimeout(requestStatus,800); }
+      else showToast(`Error: ${d.message}`,'error');
+    });
 }
 
 function clearFailure(name) {
-    fetch(`/supervisor/clear_failure/${name}`, { method: 'POST' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 1500); else alert(d.message); })
-        .catch(() => alert('Failed to clear failure.'));
-}
-
-function viewLogs(name) {
-    fetch(`/supervisor/log/${name}`)
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); })
-        .then(blob => {
-            const url = URL.createObjectURL(blob);
-            const a   = Object.assign(document.createElement('a'),
-                { href: url, download: `${name}_log.txt`, style: 'display:none' });
-            document.body.appendChild(a); a.click();
-            URL.revokeObjectURL(url); a.remove();
-        })
-        .catch(() => alert('Failed to fetch logs.'));
-}
-
-function removeBot(name) {
-    if (!confirm(`Permanently remove ${formatBotName(name)}?\nThis will stop the process and delete all files.`)) return;
-    fetch(`/api/bots/${name}`, { method: 'DELETE' })
-        .then(r => r.json())
-        .then(d => { if (d.status === 'success') setTimeout(requestStatus, 1500); else alert(d.message); })
-        .catch(() => alert('Failed to remove bot.'));
-}
-
-// ── Add Bot Modal ──────────────────────────────────────────────
-
-function openAddBotModal() {
-    // Reset form
-    ['ab-name','ab-git','ab-run','ab-pyver','ab-port','ab-label'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.value = '';
+  fetch(`/supervisor/clear_failure/${name}`, { method:'POST' })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') { showToast(`Retrying ${formatBotName(name)}`,'info'); setTimeout(requestStatus,1200); }
+      else showToast(`Error: ${d.message}`,'error');
     });
-    document.getElementById('ab-branch').value = 'main';
-    document.getElementById('env-pairs').innerHTML = '';
-    resetBuildLog();
-    document.getElementById('addbot-submit-btn').disabled = false;
-    document.getElementById('addbot-submit-btn').textContent = 'Add Bot';
-    document.getElementById('addbot-modal').style.display = 'block';
 }
 
-function closeAddBotModal() {
-    if (_buildEventSource) { _buildEventSource.close(); _buildEventSource = null; }
-    document.getElementById('addbot-modal').style.display = 'none';
+function deleteBot(name) {
+  confirmAction(`Delete ${formatBotName(name)}?`,
+    'This will permanently stop and remove the bot, its config, and all files.',
+    '🗑 Delete', true, () => {
+      fetch(`/bot/delete/${name}`, { method:'DELETE' })
+        .then(r => r.json()).then(d => {
+          if (d.status === 'success') {
+            showToast(`Deleted ${formatBotName(name)}`,'success');
+            lastKnownProcesses = lastKnownProcesses.filter(p => p.name !== name);
+            setTimeout(requestStatus, 500);
+          } else {
+            showToast(`Delete failed: ${d.message}`,'error');
+          }
+        });
+    });
 }
 
-function closeModal(id) {
-    if (id === 'addbot-modal') closeAddBotModal();
-    else document.getElementById(id).style.display = 'none';
+function _supervisorAction(action, name) {
+  showToast(`${action.charAt(0).toUpperCase()+action.slice(1)}ing ${formatBotName(name)}…`,'info',2000);
+  fetch(`/supervisor/${action}/${name}`, { method:'POST' })
+    .then(r => r.json()).then(d => {
+      if (d.status === 'success') {
+        showToast(`${formatBotName(name)} ${action}ped`,'success');
+        setTimeout(requestStatus, 1000);
+      } else {
+        showToast(`Error: ${d.message}`,'error');
+      }
+    })
+    .catch(() => showToast(`Network error`,'error'));
 }
 
-function addEnvPair(key = '', val = '') {
-    const row = document.createElement('div');
-    row.className = 'env-pair';
-    row.innerHTML = `
-      <input type="text" placeholder="KEY"   value="${key}" class="env-key">
-      <input type="text" placeholder="VALUE" value="${val}" class="env-val">
-      <button onclick="this.parentElement.remove()">✕</button>`;
-    document.getElementById('env-pairs').appendChild(row);
+function restartAllBots() {
+  confirmAction('Restart all bots?',
+    'All running bots will pull latest code and restart.',
+    '↺ Restart All', false, () => {
+      lastKnownProcesses.forEach(p => {
+        if (p.status === 'RUNNING') _supervisorAction('restart', p.name);
+      });
+      showToast('Restarting all running bots…','info');
+    });
 }
 
-// ── Build log UI ───────────────────────────────────────────────
-
-function resetBuildLog() {
-    const el = document.getElementById('build-log');
-    if (el) { el.textContent = ''; el.parentElement.style.display = 'none'; }
+function stopAllBots() {
+  confirmAction('Stop all bots?',
+    'All running bots will be stopped.',
+    '⏹ Stop All', true, () => {
+      lastKnownProcesses.forEach(p => {
+        if (p.status === 'RUNNING') _supervisorAction('stop', p.name);
+      });
+      showToast('Stopping all bots…','info');
+    });
 }
 
-function showBuildLog() {
-    const wrap = document.getElementById('build-log-wrap');
-    if (wrap) wrap.style.display = 'block';
+// ── Add Bot Modal ─────────────────────────────────────────────
+
+function openAddModal() {
+  document.getElementById('add-modal').style.display = 'flex';
+  document.getElementById('add-status').style.display = 'none';
+  switchDeployTab('git');
 }
 
-function appendLog(line) {
-    const el = document.getElementById('build-log');
-    if (!el) return;
-    el.textContent += line + '\n';
-    el.scrollTop = el.scrollHeight;
+function closeAddModal() {
+  document.getElementById('add-modal').style.display = 'none';
 }
 
-function setLogStatus(msg, color) {
-    const el = document.getElementById('addbot-status');
-    if (!el) return;
-    el.style.color = color;
-    el.textContent = msg;
+function switchDeployTab(tab) {
+  deployTab = tab;
+  document.querySelectorAll('.dtab').forEach(b => b.classList.remove('active'));
+  document.getElementById(`dtab-${tab}`).classList.add('active');
+  document.getElementById('fg-run-command').style.display   = tab === 'git'    ? '' : 'none';
+  document.getElementById('fg-python-version').style.display = tab === 'git'   ? '' : 'none';
+  document.getElementById('fg-web-port').style.display       = tab === 'docker' ? '' : 'none';
+  document.getElementById('fg-build-args').style.display     = tab === 'docker' ? '' : 'none';
 }
 
-// ── Submit ─────────────────────────────────────────────────────
+async function submitAddBot() {
+  const statusEl = document.getElementById('add-status');
+  statusEl.style.display = 'block';
 
-function submitAddBot() {
-    const btn = document.getElementById('addbot-submit-btn');
+  const name       = document.getElementById('add-name').value.trim();
+  const gitUrl     = document.getElementById('add-git-url').value.trim();
+  const branch     = document.getElementById('add-branch').value.trim() || 'main';
+  const runCommand = document.getElementById('add-run-command').value.trim();
+  const pyVer      = document.getElementById('add-python-version').value.trim();
+  const webPort    = document.getElementById('add-web-port').value.trim();
+  const envText    = document.getElementById('add-env').value.trim();
+  const baText     = document.getElementById('add-build-args').value.trim();
 
-    const botname      = document.getElementById('ab-name').value.trim();
-    const git_url      = document.getElementById('ab-git').value.trim();
-    const branch       = document.getElementById('ab-branch').value.trim();
-    const run_command  = document.getElementById('ab-run').value.trim();
-    const python_version = document.getElementById('ab-pyver').value.trim() || null;
-    const panel_port   = parseInt(document.getElementById('ab-port').value) || null;
-    const panel_label  = document.getElementById('ab-label').value.trim() || botname;
+  if (!name || !gitUrl) {
+    setStatus(statusEl,'error','⚠ Bot Name and Git URL are required.'); return;
+  }
+  if (!/bot\d+$/i.test(name)) {
+    setStatus(statusEl,'error','⚠ Name must end with botN (e.g. "my bot1").'); return;
+  }
+  if (deployTab === 'git' && !runCommand) {
+    setStatus(statusEl,'error','⚠ Run Command is required for Git bots.'); return;
+  }
 
-    if (!botname || !git_url || !branch || !run_command) {
-        setLogStatus('Please fill in all required fields.', '#f87171');
-        return;
+  const payload = {
+    process_name: name, git_url: gitUrl, branch, deploy_type: deployTab,
+    run_command: runCommand, python_version: pyVer,
+    env: parseEnvText(envText),
+    build_args: parseEnvText(baText),
+  };
+  if (webPort) payload.web_port = parseInt(webPort);
+
+  setStatus(statusEl,'info','⏳ Deploying — cloning & building…');
+  try {
+    const resp = await fetch('/bot/add', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl,'success', `✅ ${d.message}${d.web_proxy ? ` — Web UI: <a href="${d.web_proxy}" target="_blank">${d.web_proxy}</a>` : ''}`);
+      showToast(`Bot deployed!`,'success');
+      requestStatus();
+    } else {
+      setStatus(statusEl,'error', `❌ ${d.message}`);
     }
-
-    const env = {};
-    document.querySelectorAll('.env-pair').forEach(row => {
-        const k = row.querySelector('.env-key').value.trim();
-        const v = row.querySelector('.env-val').value.trim();
-        if (k) env[k] = v;
-    });
-
-    btn.disabled = true;
-    btn.textContent = 'Building…';
-    resetBuildLog();
-    showBuildLog();
-    setLogStatus('Starting build…', '#a78bfa');
-
-    // Step 1: kick off the build job
-    fetch('/api/bots', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ botname, git_url, branch, run_command,
-                               env, python_version, panel_port, panel_label }),
-    })
-    .then(r => r.json())
-    .then(data => {
-        if (data.status !== 'started') {
-            setLogStatus(`Error: ${data.message}`, '#f87171');
-            btn.disabled = false;
-            btn.textContent = 'Add Bot';
-            return;
-        }
-
-        const jobId = data.job_id;
-        setLogStatus('Build in progress…', '#a78bfa');
-
-        // Step 2: stream the build log via SSE
-        if (_buildEventSource) _buildEventSource.close();
-        _buildEventSource = new EventSource(`/api/bots/stream/${jobId}`);
-
-        _buildEventSource.onmessage = function (e) {
-            let msg;
-            try { msg = JSON.parse(e.data); } catch { return; }
-
-            if (msg.type === 'log') {
-                appendLog(msg.line);
-            } else if (msg.type === 'done') {
-                _buildEventSource.close();
-                _buildEventSource = null;
-                btn.disabled    = false;
-                // Stop the pulsing dot
-                const dot = document.getElementById('build-dot');
-                if (dot) { dot.style.animation = 'none'; dot.style.background = msg.success ? '#4ade80' : '#f87171'; }
-                btn.textContent = 'Add Bot';
-                if (msg.success) {
-                    setLogStatus(
-                        msg.message + (msg.panel_slug ? ` · Panel at /${msg.panel_slug}` : ''),
-                        '#4ade80'
-                    );
-                    setTimeout(() => { closeAddBotModal(); requestStatus(); }, 3000);
-                } else {
-                    setLogStatus(`Failed: ${msg.message}`, '#f87171');
-                    appendLog(`\n✗ Build failed: ${msg.message}`);
-                }
-            } else if (msg.type === 'heartbeat') {
-                // keep-alive — ignore
-            }
-        };
-
-        _buildEventSource.onerror = function () {
-            _buildEventSource.close();
-            _buildEventSource = null;
-            btn.disabled    = false;
-            btn.textContent = 'Add Bot';
-            setLogStatus('Connection lost during build.', '#f87171');
-        };
-    })
-    .catch(err => {
-        btn.disabled    = false;
-        btn.textContent = 'Add Bot';
-        setLogStatus(`Request failed: ${err}`, '#f87171');
-    });
+  } catch(e) {
+    setStatus(statusEl,'error',`❌ Network error: ${e.message}`);
+  }
 }
 
-// ── Cron ───────────────────────────────────────────────────────
+function setStatus(el, type, html) {
+  el.className = `status-banner status-${type}`;
+  el.innerHTML = html;
+  el.style.display = 'block';
+}
 
-function openCronModal()  { document.getElementById('cron-modal').style.display = 'block'; }
+// ── Log Modal ─────────────────────────────────────────────────
+
+function openLogModal(name) {
+  currentLogProcess = name;
+  document.getElementById('log-modal').style.display = 'flex';
+  document.getElementById('log-modal-title').textContent = formatBotName(name);
+  document.getElementById('log-content').textContent = '⏳ Loading logs…';
+  document.getElementById('log-search').value = '';
+  startLogStream(name);
+}
+
+function closeLogModal() {
+  document.getElementById('log-modal').style.display = 'none';
+  if (logSSE) { logSSE.close(); logSSE = null; }
+  currentLogProcess = null;
+}
+
+function startLogStream(name) {
+  if (logSSE) { logSSE.close(); logSSE = null; }
+  const pre = document.getElementById('log-content');
+  pre.textContent = '';
+  logSSE = new EventSource(`/supervisor/logtail/${name}?lines=300`);
+  logSSE.onmessage = (e) => {
+    try {
+      const d = JSON.parse(e.data);
+      pre.textContent += d.data;
+      if (document.getElementById('log-autoscroll').checked) {
+        pre.scrollTop = pre.scrollHeight;
+      }
+    } catch {}
+  };
+  logSSE.onerror = () => { pre.textContent += '\n[stream ended]'; };
+}
+
+function clearLogView() {
+  document.getElementById('log-content').textContent = '';
+}
+
+function downloadCurrentLog() {
+  if (!currentLogProcess) return;
+  window.open(`/supervisor/log/${currentLogProcess}`, '_blank');
+}
+
+function filterLogLines(query) {
+  const pre = document.getElementById('log-content');
+  if (!query) { pre.style.setProperty('--log-filter',''); return; }
+  // Highlight matching lines (CSS hack using mark)
+  const lines = pre.textContent.split('\n');
+  pre.innerHTML = lines.map(l =>
+    l.toLowerCase().includes(query.toLowerCase())
+      ? `<span class="log-match">${escapeHtml(l)}</span>`
+      : `<span class="log-dim">${escapeHtml(l)}</span>`
+  ).join('\n');
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Tools menu ────────────────────────────────────────────────
+
+function toggleToolsMenu() {
+  document.getElementById('tools-menu').classList.toggle('open');
+}
+
+// ── Export / Import ───────────────────────────────────────────
+
+function exportBots() {
+  window.open('/bot/export','_blank');
+  showToast('Export started','info');
+}
+
+async function importBots(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const resp = await fetch('/bot/import', { method:'POST', body: formData });
+    const d    = await resp.json();
+    if (d.status === 'success') {
+      showToast(`Imported ${d.message}`,'success');
+    } else {
+      showToast(`Import failed: ${d.message}`,'error');
+    }
+  } catch(e) {
+    showToast(`Import error: ${e.message}`,'error');
+  }
+  input.value = '';
+}
+
+// ── Cron ─────────────────────────────────────────────────────
+
+function openCronModal()  { document.getElementById('cron-modal').style.display = 'flex'; }
 function closeCronModal() { document.getElementById('cron-modal').style.display = 'none'; }
 
 function loadCronSetting() {
-    fetch('/config/cron').then(r => r.json()).then(d => {
-        if (d.hours !== undefined) document.getElementById('cron-hours').value = d.hours;
-    }).catch(() => {});
+  fetch('/config/cron').then(r=>r.json()).then(d => {
+    if (d.hours !== undefined) document.getElementById('cron-hours').value = d.hours;
+  }).catch(()=>{});
 }
 
 function saveCron() {
-    const hours = parseInt(document.getElementById('cron-hours').value) || 0;
-    fetch('/config/cron', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hours }),
-    }).then(r => r.json()).then(d => {
-        if (d.status === 'success') closeCronModal();
-        else alert('Failed to save cron setting.');
-    }).catch(() => alert('Failed to save cron setting.'));
+  const hours = parseInt(document.getElementById('cron-hours').value) || 0;
+  fetch('/config/cron', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({hours})
+  }).then(r=>r.json()).then(d => {
+    if (d.status === 'success') { closeCronModal(); showToast('Cron schedule saved','success'); }
+    else showToast('Failed to save cron','error');
+  });
 }
 
-// ── Visibility / unload ────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════
+//  Metrics Modal
+// ════════════════════════════════════════════════════════════════
 
-document.addEventListener('visibilitychange', function () {
-    if (document.hidden) {
-        if (updateInterval) clearInterval(updateInterval);
-    } else {
-        requestStatus();
-        updateInterval = setInterval(requestStatus, 3000);
-    }
-});
+let cpuChart   = null;
+let memChart   = null;
+let currentMetricsBot  = null;
+let currentMetricsWin  = 60;
 
-window.onbeforeunload = function () {
-    if (_buildEventSource) _buildEventSource.close();
-    if (socket) socket.disconnect();
-    if (updateInterval) clearInterval(updateInterval);
+const CHART_DEFAULTS = {
+  responsive: true,
+  animation: false,
+  plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+  scales: {
+    x: { ticks: { maxTicksLimit: 8, color: '#556b91', font: { size: 11 } }, grid: { color: '#1e2d4d' } },
+    y: { beginAtZero: true, ticks: { color: '#556b91', font: { size: 11 } }, grid: { color: '#1e2d4d' } },
+  },
 };
+
+function openMetricsModal(name) {
+  currentMetricsBot = name;
+  currentMetricsWin = parseInt(document.getElementById('metrics-window').value) || 60;
+  document.getElementById('metrics-modal-title').textContent = formatBotName(name);
+  document.getElementById('metrics-modal').style.display = 'flex';
+  loadMetrics(name, currentMetricsWin);
+}
+
+function closeMetricsModal() {
+  document.getElementById('metrics-modal').style.display = 'none';
+  if (cpuChart) { cpuChart.destroy(); cpuChart = null; }
+  if (memChart) { memChart.destroy(); memChart = null; }
+  currentMetricsBot = null;
+}
+
+function changeMetricsWindow(val) {
+  currentMetricsWin = parseInt(val);
+  if (currentMetricsBot) loadMetrics(currentMetricsBot, currentMetricsWin);
+}
+
+async function loadMetrics(name, windowMin) {
+  try {
+    const resp = await fetch(`/metrics/${name}?window=${windowMin}`);
+    const d = await resp.json();
+    if (d.status !== 'success') return;
+    renderMetrics(d);
+  } catch (e) {
+    console.error('Metrics fetch error:', e);
+  }
+}
+
+function renderMetrics(d) {
+  const samples = d.samples || [];
+  const labels  = samples.map(s => {
+    const dt = new Date(s.ts * 1000);
+    return dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  });
+  const cpuData = samples.map(s => s.cpu);
+  const memData = samples.map(s => s.mem_mb);
+
+  // Summary pills
+  const lastCpu = cpuData.length ? cpuData[cpuData.length-1] : 0;
+  const lastMem = memData.length ? memData[memData.length-1] : 0;
+  document.getElementById('ms-cpu').textContent      = `${lastCpu}%`;
+  document.getElementById('ms-mem').textContent      = `${lastMem} MB`;
+  document.getElementById('ms-uptime').textContent   = `${d.uptime_pct}%`;
+  document.getElementById('ms-restarts').textContent = d.restart_count;
+
+  // CPU chart
+  const cpuCtx = document.getElementById('cpu-chart').getContext('2d');
+  if (cpuChart) cpuChart.destroy();
+  cpuChart = new Chart(cpuCtx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: cpuData,
+        borderColor: '#38bdf8',
+        backgroundColor: 'rgba(56,189,248,0.08)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: { ...CHART_DEFAULTS, scales: { ...CHART_DEFAULTS.scales, y: { ...CHART_DEFAULTS.scales.y, max: 100 } } }
+  });
+
+  // Memory chart
+  const memCtx = document.getElementById('mem-chart').getContext('2d');
+  if (memChart) memChart.destroy();
+  memChart = new Chart(memCtx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: memData,
+        borderColor: '#a78bfa',
+        backgroundColor: 'rgba(167,139,250,0.08)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: CHART_DEFAULTS
+  });
+
+  // Uptime history bar
+  renderUptimeBar(d.uptime_history || []);
+}
+
+function renderUptimeBar(history) {
+  const wrap = document.getElementById('uptime-bar-wrap');
+  wrap.innerHTML = '';
+  const now   = Date.now() / 1000;
+  const start = now - 7 * 86400;
+  const total = now - start;
+  const SLOTS = 168;  // 168 × 1-hour slots = 7 days
+  const slotSec = total / SLOTS;
+
+  // Build slot states
+  const slots = new Array(SLOTS).fill('stopped');
+  const sorted = [...history].sort((a,b) => a.ts - b.ts);
+
+  let runningFrom = null;
+  for (const ev of sorted) {
+    if (ev.event === 'start') {
+      runningFrom = ev.ts;
+    } else if (ev.event === 'crash' || ev.event === 'stop') {
+      if (runningFrom !== null) {
+        _fillSlots(slots, start, slotSec, runningFrom, ev.ts, ev.event === 'crash' ? 'crash' : 'online');
+      }
+      runningFrom = null;
+    }
+  }
+  if (runningFrom !== null) {
+    _fillSlots(slots, start, slotSec, runningFrom, now, 'online');
+  }
+
+  // Render
+  slots.forEach((state, i) => {
+    const seg = document.createElement('div');
+    seg.className = `ub-seg ub-${state}`;
+    const slotTs = start + i * slotSec;
+    const dt = new Date(slotTs * 1000);
+    seg.title = `${dt.toLocaleString()} — ${state}`;
+    wrap.appendChild(seg);
+  });
+}
+
+function _fillSlots(slots, start, slotSec, from, to, state) {
+  const si = Math.max(0, Math.floor((from - start) / slotSec));
+  const ei = Math.min(slots.length - 1, Math.floor((to - start) / slotSec));
+  for (let i = si; i <= ei; i++) slots[i] = state;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  Alert Config Modal
+// ════════════════════════════════════════════════════════════════
+
+async function openAlertModal() {
+  document.getElementById('alert-modal').style.display = 'flex';
+  document.getElementById('alert-status').style.display = 'none';
+  try {
+    const r = await fetch('/config/alerts');
+    const d = await r.json();
+    if (d.config) {
+      document.getElementById('alert-tg-token').value  = '';   // never show token
+      document.getElementById('alert-tg-chat').value   = d.config.telegram_chat_id || '';
+      document.getElementById('alert-discord').value   = d.config.discord_webhook  || '';
+    }
+  } catch {}
+}
+
+function closeAlertModal() {
+  document.getElementById('alert-modal').style.display = 'none';
+}
+
+async function saveAlerts() {
+  const statusEl = document.getElementById('alert-status');
+  const payload = {
+    telegram_chat_id:  document.getElementById('alert-tg-chat').value.trim(),
+    discord_webhook:   document.getElementById('alert-discord').value.trim(),
+  };
+  const token = document.getElementById('alert-tg-token').value.trim();
+  if (token) payload.telegram_token = token;
+
+  try {
+    const r = await fetch('/config/alerts', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', '✅ Alert settings saved');
+      showToast('Alert settings saved', 'success');
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ Network error: ${e.message}`);
+  }
+}
+
+async function testAlert() {
+  const statusEl = document.getElementById('alert-status');
+  setStatus(statusEl, 'info', '⏳ Sending test alert…');
+  try {
+    const r = await fetch('/config/alerts/test', { method:'POST' });
+    const d = await r.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', '✅ Test alert sent! Check your Telegram/Discord.');
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ ${e.message}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  1. Live stdin injection
+// ════════════════════════════════════════════════════════════════
+
+let stdinBot = null;
+
+function openStdinModal(name) {
+  stdinBot = name;
+  document.getElementById('stdin-modal-title').textContent = formatBotName(name);
+  document.getElementById('stdin-modal').style.display = 'flex';
+  document.getElementById('stdin-status').style.display = 'none';
+  document.getElementById('stdin-history').innerHTML = '';
+  document.getElementById('stdin-line').value = '';
+  setTimeout(() => document.getElementById('stdin-line').focus(), 80);
+}
+
+function closeStdinModal() {
+  document.getElementById('stdin-modal').style.display = 'none';
+  stdinBot = null;
+}
+
+async function sendStdin() {
+  if (!stdinBot) return;
+  const input = document.getElementById('stdin-line');
+  const line  = input.value.trim();
+  if (!line) return;
+
+  const history = document.getElementById('stdin-history');
+  const entry   = document.createElement('div');
+  entry.className = 'stdin-entry stdin-sent';
+  entry.textContent = `$ ${line}`;
+  history.appendChild(entry);
+  history.scrollTop = history.scrollHeight;
+  input.value = '';
+
+  try {
+    const resp = await fetch(`/bot/stdin/${stdinBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ line })
+    });
+    const d = await resp.json();
+    const fb = document.createElement('div');
+    fb.className = d.status === 'success' ? 'stdin-entry stdin-ok' : 'stdin-entry stdin-err';
+    fb.textContent = d.status === 'success' ? '✓ Sent' : `✗ ${d.message}`;
+    history.appendChild(fb);
+    history.scrollTop = history.scrollHeight;
+  } catch (e) {
+    const fb = document.createElement('div');
+    fb.className = 'stdin-entry stdin-err';
+    fb.textContent = `✗ Network error: ${e.message}`;
+    history.appendChild(fb);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  2. Environment variable editor
+// ════════════════════════════════════════════════════════════════
+
+let envBot = null;
+
+async function openEnvModal(name) {
+  envBot = name;
+  document.getElementById('env-modal-title').textContent = formatBotName(name);
+  document.getElementById('env-modal').style.display = 'flex';
+  document.getElementById('env-status').style.display = 'none';
+  document.getElementById('env-rows').innerHTML = '<div style="color:var(--text-muted);font-size:13px">Loading…</div>';
+
+  try {
+    const resp = await fetch(`/bot/env/${name}`);
+    const d    = await resp.json();
+    const env  = d.env || {};
+    renderEnvRows(env);
+  } catch (e) {
+    document.getElementById('env-rows').innerHTML =
+      `<div style="color:var(--red)">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function closeEnvModal() {
+  document.getElementById('env-modal').style.display = 'none';
+  envBot = null;
+}
+
+function renderEnvRows(env) {
+  const container = document.getElementById('env-rows');
+  container.innerHTML = '';
+  const entries = Object.entries(env);
+  if (entries.length === 0) {
+    addEnvRow('', '');
+  } else {
+    entries.forEach(([k, v]) => addEnvRow(k, v));
+  }
+}
+
+function addEnvRow(key = '', val = '') {
+  const container = document.getElementById('env-rows');
+  const row = document.createElement('div');
+  row.className = 'env-row';
+  row.innerHTML = `
+    <input class="env-key"  type="text"     value="${escapeAttr(key)}" placeholder="KEY">
+    <span class="env-eq">=</span>
+    <input class="env-val"  type="text"     value="${escapeAttr(val)}" placeholder="value">
+    <button class="cbtn cbtn-delete env-del" onclick="this.closest('.env-row').remove()" title="Remove">✕</button>
+  `;
+  container.appendChild(row);
+  row.querySelector('.env-key').focus();
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function collectEnv() {
+  const env = {};
+  document.querySelectorAll('.env-row').forEach(row => {
+    const k = row.querySelector('.env-key').value.trim();
+    const v = row.querySelector('.env-val').value.trim();
+    if (k) env[k] = v;
+  });
+  return env;
+}
+
+async function saveEnv(doRestart) {
+  if (!envBot) return;
+  const statusEl = document.getElementById('env-status');
+  const env = collectEnv();
+
+  setStatus(statusEl, 'info', `⏳ Saving${doRestart ? ' and restarting' : ''}…`);
+
+  try {
+    const resp = await fetch(`/bot/env/${envBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ env, restart: doRestart })
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', `✅ ${d.message}`);
+      showToast('Env vars updated', 'success');
+      if (doRestart) setTimeout(requestStatus, 1500);
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ Network error: ${e.message}`);
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  3. Health check
+// ════════════════════════════════════════════════════════════════
+
+let healthBot = null;
+
+async function openHealthModal(name) {
+  healthBot = name;
+  document.getElementById('health-modal-title').textContent = formatBotName(name);
+  document.getElementById('health-modal').style.display = 'flex';
+  document.getElementById('health-status').style.display = 'none';
+  document.getElementById('health-state-box').style.display = 'none';
+
+  try {
+    const resp = await fetch(`/bot/health/${name}`);
+    const d    = await resp.json();
+    const cfg  = d.config || {};
+    const st   = d.state  || {};
+
+    document.getElementById('health-url').value      = cfg.url      || '';
+    document.getElementById('health-interval').value = cfg.interval_sec || 30;
+    document.getElementById('health-timeout').value  = cfg.timeout_sec  || 5;
+    document.getElementById('health-enabled').value  = cfg.enabled === false ? 'false' : 'true';
+
+    if (cfg.url) {
+      document.getElementById('health-state-box').style.display = 'block';
+      const ok = st.consecutive_failures === 0 && st.last_ok;
+      document.getElementById('hsb-status').innerHTML =
+        ok ? '<span style="color:var(--green)">✓ Healthy</span>'
+           : `<span style="color:var(--red)">✗ Failing</span>`;
+      document.getElementById('hsb-last-ok').textContent =
+        st.last_ok ? new Date(st.last_ok * 1000).toLocaleString() : 'Never';
+      document.getElementById('hsb-failures').textContent = st.consecutive_failures || 0;
+    }
+  } catch (e) {
+    setStatus(document.getElementById('health-status'), 'error', `Failed to load: ${e.message}`);
+  }
+}
+
+function closeHealthModal() {
+  document.getElementById('health-modal').style.display = 'none';
+  healthBot = null;
+}
+
+async function saveHealth() {
+  if (!healthBot) return;
+  const statusEl = document.getElementById('health-status');
+  const payload  = {
+    url:          document.getElementById('health-url').value.trim(),
+    interval_sec: parseInt(document.getElementById('health-interval').value) || 30,
+    timeout_sec:  parseInt(document.getElementById('health-timeout').value)  || 5,
+    enabled:      document.getElementById('health-enabled').value === 'true',
+  };
+  setStatus(statusEl, 'info', '⏳ Saving…');
+  try {
+    const resp = await fetch(`/bot/health/${healthBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', `✅ ${d.message}`);
+      showToast('Health check saved', 'success');
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ ${e.message}`);
+  }
+}
+
+async function removeHealth() {
+  if (!healthBot) return;
+  try {
+    await fetch(`/bot/health/${healthBot}`, { method: 'DELETE' });
+    showToast('Health check removed', 'info');
+    closeHealthModal();
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+
+// ════════════════════════════════════════════════════════════════
+//  4. Restart rate limiter
+// ════════════════════════════════════════════════════════════════
+
+let rlBot = null;
+
+async function openRlModal(name) {
+  rlBot = name;
+  document.getElementById('rl-modal-title').textContent = formatBotName(name);
+  document.getElementById('ratelimit-modal').style.display = 'flex';
+  document.getElementById('rl-status').style.display = 'none';
+  document.getElementById('rl-current').style.display = 'none';
+
+  try {
+    const resp = await fetch(`/bot/ratelimit/${name}`);
+    const d    = await resp.json();
+    const rl   = d.rate_limit || {};
+
+    if (rl.max_restarts) {
+      document.getElementById('rl-max').value    = rl.max_restarts;
+      document.getElementById('rl-window').value = rl.window_sec;
+      document.getElementById('rl-current').style.display = 'block';
+      document.getElementById('rl-remaining').textContent =
+        `${d.recent_restarts} used of ${rl.max_restarts}`;
+      document.getElementById('rl-window-disp').textContent =
+        `${rl.window_sec}s (${Math.round(rl.window_sec/60)} min)`;
+    }
+  } catch (e) {
+    setStatus(document.getElementById('rl-status'), 'error', `Load failed: ${e.message}`);
+  }
+}
+
+function closeRlModal() {
+  document.getElementById('ratelimit-modal').style.display = 'none';
+  rlBot = null;
+}
+
+async function saveRateLimit() {
+  if (!rlBot) return;
+  const statusEl  = document.getElementById('rl-status');
+  const maxR      = parseInt(document.getElementById('rl-max').value)    || 5;
+  const windowSec = parseInt(document.getElementById('rl-window').value) || 3600;
+  setStatus(statusEl, 'info', '⏳ Saving…');
+  try {
+    const resp = await fetch(`/bot/ratelimit/${rlBot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_restarts: maxR, window_sec: windowSec })
+    });
+    const d = await resp.json();
+    if (d.status === 'success') {
+      setStatus(statusEl, 'success', `✅ ${d.message}`);
+      showToast('Rate limit saved', 'success');
+    } else {
+      setStatus(statusEl, 'error', `❌ ${d.message}`);
+    }
+  } catch (e) {
+    setStatus(statusEl, 'error', `❌ ${e.message}`);
+  }
+}
+
+async function removeRateLimit() {
+  if (!rlBot) return;
+  try {
+    await fetch(`/bot/ratelimit/${rlBot}`, { method: 'DELETE' });
+    showToast('Rate limit removed', 'info');
+    closeRlModal();
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
