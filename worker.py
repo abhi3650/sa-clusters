@@ -2206,3 +2206,23 @@ def system_capabilities():
 def handle_error(e):
     logger.error(f"Unhandled: {e}")
     return jsonify({"status":"error","message":"Internal server error"}), 500
+
+
+# ════════════════════════════════════════════════════════════════
+#  Entry point — run directly with: python3 worker.py
+# ════════════════════════════════════════════════════════════════
+
+if __name__ == '__main__':
+    import os as _os
+    _port = int(_os.environ.get('PORT', 5000))
+    logger.info(f"Starting BotClusters on port {_port}")
+    _os.makedirs(SUPERVISOR_LOG_DIR, exist_ok=True)
+    _os.makedirs('/app', exist_ok=True)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=_port,
+        debug=False,
+        use_reloader=False,
+        allow_unsafe_werkzeug=True,
+    )
