@@ -634,6 +634,40 @@ def cluster():
 #  Add / Deploy bot (Git or Dockerfile) — no env-var config needed
 # ════════════════════════════════════════════════════════════════
 
+def _docker_available() -> bool:
+    """
+    Check if a Docker-compatible CLI is available.
+    Accepts either 'docker' (real Docker or our podman shim) or 'podman' directly.
+    """
+    import shutil
+    return shutil.which('docker') is not None or shutil.which('podman') is not None
+
+
+def _docker_cmd() -> str:
+    """Return the docker-compatible command to use ('docker' shim or 'podman')."""
+    import shutil
+    if shutil.which('docker'):
+        return 'docker'
+    if shutil.which('podman'):
+        return 'podman'
+    return 'docker'  # will fail gracefully
+
+def _docker_required(f):
+    """Decorator: return 503 if Docker CLI is not available."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not _docker_available():
+            return jsonify({
+                "status": "error",
+                "message": "No container runtime found (docker/podman). "
+                           "The BotClusters image includes Podman — if you see this error "
+                           "the container may need --privileged or --device /dev/fuse. "
+                           "Git and ZIP bots work without any container runtime."
+            }), 503
+        return f(*args, **kwargs)
+    return decorated
+
+
 @app.route('/bot/add', methods=['POST'])
 @login_required
 def bot_add():
@@ -670,9 +704,14 @@ def bot_add():
         subprocess.run(['git','clone','-b',branch,'--single-branch', git_url, str(clone_dir)], check=True)
 
         if deploy_type == 'docker':
+            if not _docker_available():
+                return jsonify({
+                    "status": "error",
+                    "message": "Docker is not available on this host. Use Git or ZIP deployment instead."
+                }), 503
             # Build & create container
             container_name = f"botcluster_{safe}"
-            build_cmd = ['docker','build','-t', container_name, str(clone_dir)]
+            build_cmd = [_docker_cmd(),'build','-t', container_name, str(clone_dir)]
             for k,v in build_args.items():
                 build_cmd += ['--build-arg', f'{k}={v}']
             subprocess.run(build_cmd, check=True)
@@ -681,8 +720,8 @@ def bot_add():
             if web_port:
                 host_port = _find_free_port(9100)
 
-            subprocess.run(['docker','rm','-f', container_name], capture_output=True)
-            run_cmd = ['docker','create','--name', container_name,'--restart','no']
+            subprocess.run([_docker_cmd(),'rm','-f', container_name], capture_output=True)
+            run_cmd = [_docker_cmd(),'create','--name', container_name,'--restart','no']
             for k,v in env_vars.items():
                 run_cmd += ['-e', f'{k}={v}']
             if host_port and web_port:
@@ -757,8 +796,8 @@ def bot_delete(process_name):
 
         # Remove Docker container if applicable
         dreg = DOCKER_REGISTRY.pop(safe, None)
-        if dreg:
-            subprocess.run(['docker','rm','-f', dreg['container_name']], capture_output=True)
+        if dreg and _docker_available():
+            subprocess.run([_docker_cmd(),'rm','-f', dreg['container_name']], capture_output=True)
 
         # Remove supervisord config
         conf = Path(SUPERVISORD_CONF_DIR) / f"{safe}.conf"
@@ -923,7 +962,7 @@ def manage_supervisor_process(action, process_name):
                 supervisord_reload()
             safe = process_name.replace(' ','_')
             if safe in DOCKER_REGISTRY:
-                subprocess.run(['docker','stop', DOCKER_REGISTRY[safe]['container_name']], capture_output=True)
+                subprocess.run([_docker_cmd(),'stop', DOCKER_REGISTRY[safe]['container_name']], capture_output=True)
             expected_status = "STOPPED"
 
         elif action == "start":
@@ -1435,7 +1474,7 @@ def bot_stdin(process_name):
         cname = dreg['container_name']
         try:
             result = subprocess.run(
-                ['docker', 'exec', '-i', cname, 'sh', '-c', f'echo {json.dumps(line)}'],
+                [_docker_cmd(), 'exec', '-i', cname, 'sh', '-c', f'echo {json.dumps(line)}'],
                 capture_output=True, text=True, timeout=5)
             if result.returncode == 0:
                 return jsonify({"status": "success", "message": f"Sent to {cname}"}), 200
@@ -1517,6 +1556,9 @@ def bot_env_set(process_name):
                 cfg.write(f)
 
         elif deploy_type == 'docker':
+            if not _docker_available():
+                return jsonify({"status": "error",
+                                "message": "Docker not available — env saved but container not recreated."}), 503
             dreg = DOCKER_REGISTRY.get(safe, {})
             if not dreg:
                 return jsonify({"status": "error", "message": "Docker registry entry not found"}), 404
@@ -1526,12 +1568,12 @@ def bot_env_set(process_name):
             int_port   = dreg.get('internal_port')
 
             # Stop & remove old container, recreate with new env
-            subprocess.run(['docker', 'stop', cname], capture_output=True, timeout=15)
-            subprocess.run(['docker', 'rm',   cname], capture_output=True, timeout=15)
+            subprocess.run([_docker_cmd(), 'stop', cname], capture_output=True, timeout=15)
+            subprocess.run([_docker_cmd(), 'rm',   cname], capture_output=True, timeout=15)
 
             # Rebuild create command
             image_name = cname   # image tag = container name in our scheme
-            run_cmd = ['docker', 'create', '--name', cname, '--restart', 'no']
+            run_cmd = [_docker_cmd(), 'create', '--name', cname, '--restart', 'no']
             for k, v in new_env.items():
                 run_cmd += ['-e', f'{k}={v}']
             if host_port and int_port:
@@ -2144,6 +2186,20 @@ def _start_sched_thread():
     global _sched_thread
     if not _sched_thread:
         _sched_thread = eventlet.spawn(_scheduled_deploy_loop)
+
+
+@app.route('/system/capabilities', methods=['GET'])
+def system_capabilities():
+    """Return what features are available on this host."""
+    import shutil
+    docker_bin  = shutil.which('docker')
+    podman_bin  = shutil.which('podman')
+    runtime     = 'docker' if docker_bin else ('podman' if podman_bin else None)
+    return jsonify({
+        "docker_available": _docker_available(),
+        "container_runtime": runtime,   # 'docker', 'podman', or null
+        "git_available": bool(shutil.which('git')),
+    }), 200
 
 
 @app.errorhandler(Exception)

@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   loadCronSetting();
+  checkCapabilities();
 
   // Close dropdowns on outside click
   document.addEventListener('click', (e) => {
@@ -563,6 +564,35 @@ function loadCronSetting() {
   fetch('/config/cron').then(r=>r.json()).then(d => {
     if (d.hours !== undefined) document.getElementById('cron-hours').value = d.hours;
   }).catch(()=>{});
+}
+
+async function checkCapabilities() {
+  try {
+    const resp = await fetch('/system/capabilities');
+    const d    = await resp.json();
+
+    const tab = document.getElementById('dtab-docker');
+    if (!tab) return;
+
+    if (d.docker_available) {
+      const runtime = d.container_runtime || 'docker';
+      // Show what runtime is backing Docker deployment
+      tab.textContent = runtime === 'podman' ? '🦭 Dockerfile (Podman)' : '🐳 Dockerfile';
+      tab.title = runtime === 'podman'
+        ? 'Using Podman as Docker-compatible runtime (daemonless)'
+        : 'Using Docker runtime';
+    } else {
+      // No container runtime — disable tab
+      tab.disabled = true;
+      tab.title    = 'No container runtime available. Use Git or ZIP deployment.';
+      tab.style.opacity = '0.4';
+      tab.style.cursor  = 'not-allowed';
+      // Hide Docker filter tab
+      document.querySelectorAll('.ftab[data-filter="docker"]').forEach(b => {
+        b.style.display = 'none';
+      });
+    }
+  } catch {}
 }
 
 function saveCron() {
