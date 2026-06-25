@@ -2215,7 +2215,8 @@ def handle_error(e):
 if __name__ == '__main__':
     import os as _os
     _port = int(_os.environ.get('PORT', 5000))
-    logger.info(f"Starting BotClusters on port {_port}")
+    print(f"[BotClusters Enhanced] Starting on port {_port}", flush=True)
+    logger.info(f"Starting BotClusters Enhanced on port {_port}")
     _os.makedirs(SUPERVISOR_LOG_DIR, exist_ok=True)
     _os.makedirs('/app', exist_ok=True)
     socketio.run(
