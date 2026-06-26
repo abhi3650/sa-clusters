@@ -1293,12 +1293,6 @@ def _auto_delete_logs_loop():
             try: lf.unlink()
             except: pass
 
-eventlet.spawn(_auto_delete_logs_loop)
-eventlet.spawn(_metrics_loop)
-eventlet.spawn(_health_check_loop)
-_start_cron_thread()
-_start_sched_thread()
-
 
 # ════════════════════════════════════════════════════════════════
 #  Metrics API endpoints
@@ -2209,5 +2203,11 @@ def handle_error(e):
 
 
 # ════════════════════════════════════════════════════════════════
-#  Entry point — run directly with: python3 worker.py
+#  Start background loops — must be LAST so all functions exist
 # ════════════════════════════════════════════════════════════════
+
+eventlet.spawn(_auto_delete_logs_loop)
+eventlet.spawn(_metrics_loop)
+eventlet.spawn(_health_check_loop)
+_start_cron_thread()
+_start_sched_thread()
