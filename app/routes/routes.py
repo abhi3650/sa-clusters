@@ -321,7 +321,7 @@ def _redeploy_git_bot(process_name: str, bot_dir: Path, breg: dict) -> dict:
     env_vars   = breg.get('env', {})
 
     try:
-        python_exec = shutil.which(f"python{python_ver}") or shutil.which("python3") or "python3"
+        python_exec = _find_python(python_ver)
         venv_dir    = bot_dir / 'venv'
         req_file    = bot_dir / 'requirements.txt'
 
@@ -634,6 +634,46 @@ def cluster():
 #  Add / Deploy bot (Git or Dockerfile) — no env-var config needed
 # ════════════════════════════════════════════════════════════════
 
+
+def _find_python(version: str) -> str:
+    """
+    Find the best Python executable for the requested version.
+    Searches: pyenv versions, system shims, direct binaries, falls back to python3.
+    """
+    import glob as _glob
+
+    if version:
+        candidates = [
+            # pyenv installed versions (most reliable)
+            f"/root/.pyenv/versions/{version}/bin/python3",
+            f"/root/.pyenv/versions/{version}.0/bin/python3",
+            f"/root/.pyenv/versions/{version}.1/bin/python3",
+            f"/root/.pyenv/versions/{version}.2/bin/python3",
+            # direct binaries
+            f"/usr/bin/python{version}",
+            f"/usr/local/bin/python{version}",
+        ]
+        # Also check any pyenv version that starts with the requested version
+        for p in _glob.glob(f"/root/.pyenv/versions/{version}*/bin/python3"):
+            candidates.append(p)
+        for p in _glob.glob(f"/usr/bin/python{version}*"):
+            candidates.append(p)
+
+        for c in candidates:
+            if shutil.which(c) or (Path(c).exists() and Path(c).is_file()):
+                logger.info(f"Using Python: {c}")
+                return c
+
+        # Try shutil.which as last version-specific attempt
+        found = shutil.which(f"python{version}")
+        if found:
+            return found
+
+        logger.warning(f"Python {version} not found, falling back to python3")
+
+    # Fallback: use whatever python3 is available
+    return shutil.which("python3") or "python3"
+
 def _docker_available() -> bool:
     """
     Check if a Docker-compatible CLI is available.
@@ -711,10 +751,19 @@ def bot_add():
                 }), 503
             # Build & create container
             container_name = f"botcluster_{safe}"
-            build_cmd = [_docker_cmd(),'build','-t', container_name, str(clone_dir)]
+            build_cmd = [
+                _docker_cmd(), 'build',
+                '--storage-driver', 'vfs',
+                '--network', 'host',
+                '-t', container_name,
+                str(clone_dir)
+            ]
             for k,v in build_args.items():
                 build_cmd += ['--build-arg', f'{k}={v}']
-            subprocess.run(build_cmd, check=True)
+            result = subprocess.run(build_cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                err = result.stderr or result.stdout or 'unknown error'
+                raise subprocess.CalledProcessError(result.returncode, build_cmd, stderr=err)
 
             host_port = None
             if web_port:
@@ -738,7 +787,7 @@ def bot_add():
             venv_dir = clone_dir / 'venv'
             req_file = clone_dir / 'requirements.txt'
 
-            python_exec = shutil.which(f"python{python_ver}") or shutil.which("python3") or "python3"
+            python_exec = _find_python(python_ver)
             if req_file.exists():
                 subprocess.run([python_exec,'-m','venv', str(venv_dir)], check=True)
                 subprocess.run([str(venv_dir/'bin'/'pip'),'install','--no-cache-dir','-r',str(req_file)], check=True)
@@ -1967,7 +2016,7 @@ def bot_upload_zip(process_name):
                         shutil.copyfileobj(src, dst)
 
         # Install deps + write supervisord config
-        python_exec = shutil.which(f"python{python_ver}") or shutil.which("python3") or "python3"
+        python_exec = _find_python(python_ver)
         venv_dir    = bot_dir / 'venv'
         req_file    = bot_dir / 'requirements.txt'
         if req_file.exists():
