@@ -18,8 +18,16 @@ RUN printf '#!/bin/sh\nexec podman "$@"\n' > /usr/local/bin/docker && \
 
 # Podman rootless storage config for container environments
 RUN mkdir -p /etc/containers && \
-    printf '[storage]\ndriver = "overlay"\nrunRoot = "/run/containers/storage"\ngraphRoot = "/var/lib/containers/storage"\n\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
-    > /etc/containers/storage.conf
+    printf '[storage]\ndriver = "vfs"\nrunRoot = "/run/containers/storage"\ngraphRoot = "/var/lib/containers/storage"\n' \
+    > /etc/containers/storage.conf && \
+    mkdir -p /root/.config/containers && \
+    printf '[storage]\ndriver = "vfs"\n' > /root/.config/containers/storage.conf
+
+# Environment for rootless Podman (works without --privileged on Render/Koyeb)
+ENV STORAGE_DRIVER=vfs \
+    BUILDAH_FORMAT=docker \
+    PODMAN_USERNS=keep-id \
+    _CONTAINERS_USERNS_CONFIGURED=done
 
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
