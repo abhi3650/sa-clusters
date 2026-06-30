@@ -34,7 +34,7 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 5000
+EXPOSE 8000
 
 # Note: For Docker bot deployment (building images from Dockerfiles),
 # run with --privileged or --device /dev/fuse for fuse-overlayfs support:

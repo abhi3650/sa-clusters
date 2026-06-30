@@ -324,15 +324,36 @@ def _redeploy_git_bot(process_name: str, bot_dir: Path, breg: dict) -> dict:
         python_exec = _find_python(python_ver)
         venv_dir    = bot_dir / 'venv'
         req_file    = bot_dir / 'requirements.txt'
+        pip_cmd     = None
 
         if req_file.exists():
-            if not venv_dir.exists():
-                subprocess.run([python_exec, '-m', 'venv', str(venv_dir)], check=True)
-            subprocess.run([str(venv_dir/'bin'/'pip'), 'install', '--no-cache-dir',
-                            '-r', str(req_file)], check=True)
+            venv_ok = False
+            try:
+                if not venv_dir.exists():
+                    r = subprocess.run(
+                        [python_exec, '-m', 'venv', str(venv_dir)],
+                        capture_output=True, text=True, timeout=120)
+                    venv_ok = r.returncode == 0
+                else:
+                    venv_ok = True
+                if venv_ok:
+                    pip_cmd = str(venv_dir / 'bin' / 'pip')
+            except Exception as ve:
+                logger.warning(f"venv failed in redeploy: {ve}")
+
+            if not venv_ok:
+                venv_dir = None
+                pip_cmd  = shutil.which('pip3') or 'pip3'
+
+            subprocess.run([pip_cmd, 'install', '--no-cache-dir', '-r', str(req_file)],
+                           check=True, timeout=300)
 
         bot_file = bot_dir / run_cmd
-        py       = venv_dir / 'bin' / 'python3'
+        if venv_dir and Path(venv_dir).exists():
+            py = str(venv_dir / 'bin' / 'python3')
+        else:
+            py = python_exec
+
         if bot_file.suffix == '.sh':
             command = f"bash {bot_file}"
         elif bot_file.suffix == '.py':
@@ -638,41 +659,50 @@ def cluster():
 def _find_python(version: str) -> str:
     """
     Find the best Python executable for the requested version.
-    Searches: pyenv versions, system shims, direct binaries, falls back to python3.
+    Searches pyenv installed versions, system paths, falls back to python3.
     """
     import glob as _glob
 
     if version:
-        candidates = [
-            # pyenv installed versions (most reliable)
-            f"/root/.pyenv/versions/{version}/bin/python3",
-            f"/root/.pyenv/versions/{version}.0/bin/python3",
-            f"/root/.pyenv/versions/{version}.1/bin/python3",
-            f"/root/.pyenv/versions/{version}.2/bin/python3",
-            # direct binaries
-            f"/usr/bin/python{version}",
-            f"/usr/local/bin/python{version}",
-        ]
-        # Also check any pyenv version that starts with the requested version
-        for p in _glob.glob(f"/root/.pyenv/versions/{version}*/bin/python3"):
-            candidates.append(p)
-        for p in _glob.glob(f"/usr/bin/python{version}*"):
-            candidates.append(p)
+        ver = version.strip()
+        candidates = []
 
+        # Search all pyenv installed versions that match
+        for pyenv_root in ['/root/.pyenv', '/usr/local/pyenv', '/opt/pyenv']:
+            pattern = f"{pyenv_root}/versions/{ver}*/bin/python3"
+            candidates.extend(_glob.glob(pattern))
+            # Also try exact match
+            candidates.append(f"{pyenv_root}/versions/{ver}/bin/python3")
+
+        # System paths
+        for prefix in ['/usr/bin', '/usr/local/bin', '/bin']:
+            candidates.append(f"{prefix}/python{ver}")
+            candidates.append(f"{prefix}/python3")
+
+        # Deduplicate preserving order
+        seen = set()
+        unique = []
         for c in candidates:
-            if shutil.which(c) or (Path(c).exists() and Path(c).is_file()):
-                logger.info(f"Using Python: {c}")
-                return c
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
 
-        # Try shutil.which as last version-specific attempt
-        found = shutil.which(f"python{version}")
-        if found:
-            return found
+        for c in unique:
+            p = Path(c)
+            if p.exists() and p.is_file():
+                logger.info(f"Found Python {ver} at: {c}")
+                return str(c)
 
-        logger.warning(f"Python {version} not found, falling back to python3")
+        # shutil.which fallback
+        for name in [f"python{ver}", f"python3", "python"]:
+            found = shutil.which(name)
+            if found:
+                logger.info(f"Using Python via which: {found}")
+                return found
 
-    # Fallback: use whatever python3 is available
-    return shutil.which("python3") or "python3"
+        logger.warning(f"Python {ver} not found anywhere, using python3")
+
+    return shutil.which("python3") or shutil.which("python") or "python3"
 
 def _docker_available() -> bool:
     """
@@ -760,10 +790,15 @@ def bot_add():
             ]
             for k,v in build_args.items():
                 build_cmd += ['--build-arg', f'{k}={v}']
-            result = subprocess.run(build_cmd, capture_output=True, text=True)
+            result = subprocess.run(build_cmd, capture_output=True, text=True, timeout=600)
             if result.returncode != 0:
-                err = result.stderr or result.stdout or 'unknown error'
-                raise subprocess.CalledProcessError(result.returncode, build_cmd, stderr=err)
+                # Return combined stderr+stdout so user sees the actual build error
+                err = (result.stderr + '\n' + result.stdout).strip() or 'Build failed with no output'
+                logger.error(f"podman build failed for {process_name}:\n{err}")
+                return jsonify({
+                    "status": "error",
+                    "message": f"Container build failed:\n{err[-2000:]}"
+                }), 500
 
             host_port = None
             if web_port:
@@ -788,12 +823,41 @@ def bot_add():
             req_file = clone_dir / 'requirements.txt'
 
             python_exec = _find_python(python_ver)
-            if req_file.exists():
-                subprocess.run([python_exec,'-m','venv', str(venv_dir)], check=True)
-                subprocess.run([str(venv_dir/'bin'/'pip'),'install','--no-cache-dir','-r',str(req_file)], check=True)
+            pip_cmd = None  # will be set after venv or fallback
 
+            if req_file.exists():
+                # Try creating a venv first
+                venv_ok = False
+                try:
+                    r = subprocess.run(
+                        [python_exec, '-m', 'venv', str(venv_dir)],
+                        capture_output=True, text=True, timeout=120)
+                    if r.returncode == 0:
+                        venv_ok = True
+                        pip_cmd = str(venv_dir / 'bin' / 'pip')
+                        logger.info(f"venv created with {python_exec}")
+                    else:
+                        logger.warning(f"venv failed ({r.stderr.strip()}), trying pip3")
+                except Exception as ve:
+                    logger.warning(f"venv exception: {ve}, trying pip3")
+
+                if not venv_ok:
+                    # Fall back: use system pip3 to install globally
+                    venv_dir = None
+                    pip_cmd = shutil.which('pip3') or shutil.which('pip') or 'pip3'
+                    logger.info(f"Using system pip: {pip_cmd}")
+
+                subprocess.run(
+                    [pip_cmd, 'install', '--no-cache-dir', '-r', str(req_file)],
+                    check=True, timeout=300)
+
+            # Build the run command
             bot_file = clone_dir / run_command
-            py = venv_dir/'bin'/'python3'
+            if venv_dir and Path(venv_dir).exists():
+                py = str(venv_dir / 'bin' / 'python3')
+            else:
+                py = python_exec
+
             if bot_file.suffix == '.sh':
                 command = f"bash {bot_file}"
             elif bot_file.suffix == '.py':
